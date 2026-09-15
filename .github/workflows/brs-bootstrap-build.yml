@@ -15,6 +15,7 @@ env:
   LLVM_VERSION: '15.0.6'
   FLUTTER_VERSION: '3.24.5'
   VCPKG_COMMIT_ID: '120deac3062162151622ca4860575a33844ba10b'
+  HBB_COMMON_UPSTREAM: '7e1c392c62d39c364127307cd408421dd5f8cfb0'
   PATCH_BASE: 'https://brs.burzam.com/source/brs-remote-engine-1.4.9'
 
 jobs:
@@ -55,7 +56,20 @@ jobs:
                  .brs-patches/0002-add-BRS-Windows-x64-CI-build-workflow.patch \
                  .brs-patches/0003-brand-Spanish-Remote-Engine-UI-as-BRS.patch \
                  .brs-patches/0004-harden-BRS-Windows-CI-and-branding-gate.patch
-          git submodule update --init --recursive
+          # The BRS hbb_common delta is one identity line. Keep the public
+          # upstream submodule revision available in the fork, then apply the
+          # BRS identity deterministically in the checked-out submodule.
+          git -C libs/hbb_common checkout "$HBB_COMMON_UPSTREAM"
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('libs/hbb_common/src/config.rs')
+          s = p.read_text(encoding='utf-8')
+          old = 'pub static ref APP_NAME: RwLock<String> = RwLock::new("RustDesk".to_owned());'
+          new = 'pub static ref APP_NAME: RwLock<String> = RwLock::new("BRS".to_owned());'
+          if old not in s:
+              raise SystemExit('Expected hbb_common APP_NAME baseline not found')
+          p.write_text(s.replace(old, new, 1), encoding='utf-8')
+          PY
           git log -5 --oneline
 
       - name: Validate BRS source branding gate
@@ -67,6 +81,8 @@ jobs:
           $runner = Get-Content .\flutter\windows\runner\Runner.rc -Raw
           if (-not $runner.Contains('BRS Remote Engine')) { throw 'Windows metadata is missing BRS Remote Engine' }
           if (-not $runner.Contains('Burzam')) { throw 'Windows metadata is missing Burzam' }
+          $common = Get-Content .\libs\hbb_common\src\config.rs -Raw
+          if (-not $common.Contains('RwLock::new("BRS".to_owned())')) { throw 'hbb_common APP_NAME is not BRS' }
 
       - name: Install LLVM and Clang
         uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
