@@ -1,0 +1,148 @@
+name: BRS Remote Engine Bootstrap Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [brs-branding-1.4.9]
+    paths:
+      - '.github/workflows/brs-bootstrap-build.yml'
+
+permissions:
+  contents: read
+
+env:
+  RUST_VERSION: '1.75'
+  LLVM_VERSION: '15.0.6'
+  FLUTTER_VERSION: '3.24.5'
+  VCPKG_COMMIT_ID: '120deac3062162151622ca4860575a33844ba10b'
+  PATCH_BASE: 'https://brs.burzam.com/source/brs-remote-engine-1.4.9'
+
+jobs:
+  build-windows-x64:
+    name: BRS Remote Engine x64
+    runs-on: windows-2022
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout RustDesk 1.4.9 fork
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          submodules: recursive
+
+      - name: Fetch and verify BRS patch stack
+        shell: pwsh
+        run: |
+          $patches = @(
+            @{ Name='0001-create-BRS-Remote-Engine-branding-baseline.patch'; Sha='a3e34c04c722dc2dcb91b46ccb7634c6874657c084cdbd2a0f1b2956f0d8d3aa' },
+            @{ Name='0002-add-BRS-Windows-x64-CI-build-workflow.patch'; Sha='5a9a5505d746db8f88c30dcdf35ab7af53beaa3a4c53522419e19d7477bd23c6' },
+            @{ Name='0003-brand-Spanish-Remote-Engine-UI-as-BRS.patch'; Sha='6195b3b22275b4a0e311dbe0120c5c17ef26c0564e6b1d9cff5a71e59dfc7bf9' },
+            @{ Name='0004-harden-BRS-Windows-CI-and-branding-gate.patch'; Sha='8f75a53a746affba5d423d152475867469dadef855156506ef6218061d90ecaf' }
+          )
+          New-Item -ItemType Directory -Force -Path .brs-patches | Out-Null
+          foreach ($p in $patches) {
+            $dst = Join-Path '.brs-patches' $p.Name
+            Invoke-WebRequest -Uri "$env:PATCH_BASE/$($p.Name)" -OutFile $dst
+            $actual = (Get-FileHash $dst -Algorithm SHA256).Hash.ToLower()
+            if ($actual -ne $p.Sha) { throw "Patch hash mismatch for $($p.Name): $actual" }
+          }
+
+      - name: Apply BRS derivative patches
+        shell: bash
+        run: |
+          git config user.name "Burzam Build"
+          git config user.email "build@burzam.local"
+          git am .brs-patches/0001-create-BRS-Remote-Engine-branding-baseline.patch \
+                 .brs-patches/0002-add-BRS-Windows-x64-CI-build-workflow.patch \
+                 .brs-patches/0003-brand-Spanish-Remote-Engine-UI-as-BRS.patch \
+                 .brs-patches/0004-harden-BRS-Windows-CI-and-branding-gate.patch
+          git submodule update --init --recursive
+          git log -5 --oneline
+
+      - name: Validate BRS source branding gate
+        shell: pwsh
+        run: |
+          $es = Get-Content .\src\lang\es.rs -Raw
+          $forbidden = @('Verificar la contraseña de RustDesk','Mostrar RustDesk','Acerca de RustDesk','Conexión a la red RustDesk','Con tecnología de RustDesk')
+          foreach ($text in $forbidden) { if ($es.Contains($text)) { throw "Residual upstream UI text found: $text" } }
+          $runner = Get-Content .\flutter\windows\runner\Runner.rc -Raw
+          if (-not $runner.Contains('BRS Remote Engine')) { throw 'Windows metadata is missing BRS Remote Engine' }
+          if (-not $runner.Contains('Burzam')) { throw 'Windows metadata is missing Burzam' }
+
+      - name: Install LLVM and Clang
+        uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
+        with:
+          version: ${{ env.LLVM_VERSION }}
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@2783a3f08e1baf891508463f8c6653c258246225 # v2.12.0
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          architecture: x64
+
+      - name: Prepare Rust
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: x86_64-pc-windows-msvc
+          components: rustfmt
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
+        with:
+          vcpkgDirectory: C:\vcpkg
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          doNotCache: false
+
+      - name: Install native dependencies
+        shell: bash
+        env:
+          VCPKG_DEFAULT_HOST_TRIPLET: x64-windows-static
+        run: |
+          "$VCPKG_ROOT/vcpkg" install --triplet x64-windows-static --x-install-root="$VCPKG_ROOT/installed"
+
+      - name: Prepare Flutter engine
+        shell: pwsh
+        run: |
+          flutter doctor -v
+          flutter precache --windows
+          Invoke-WebRequest -Uri https://github.com/rustdesk/engine/releases/download/main/windows-x64-release.zip -OutFile windows-x64-release.zip
+          Expand-Archive -Path windows-x64-release.zip -DestinationPath windows-x64-release
+          $flutterRoot = Split-Path -Parent (Split-Path -Parent (Get-Command flutter).Source)
+          Copy-Item -Force -Recurse windows-x64-release\* "$flutterRoot\bin\cache\artifacts\engine\windows-x64-release\"
+
+      - name: Apply Flutter 3.24 compatibility patch
+        shell: bash
+        run: |
+          FLUTTER_ROOT="$(dirname "$(dirname "$(which flutter)")")"
+          cp .github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff "$FLUTTER_ROOT/"
+          cd "$FLUTTER_ROOT"
+          git apply flutter_3.24.4_dropdown_menu_enableFilter.diff
+
+      - name: Build BRS Remote Engine
+        shell: pwsh
+        env:
+          VCPKG_ROOT: C:\vcpkg
+        run: |
+          python .\build.py --portable --flutter --skip-portable-pack --hwcodec --vram
+          $src = '.\flutter\build\windows\x64\runner\Release\rustdesk.exe'
+          if (-not (Test-Path $src)) { throw 'Build did not produce rustdesk.exe' }
+          New-Item -ItemType Directory -Force -Path .\brs-artifact | Out-Null
+          Copy-Item $src .\brs-artifact\BRS-Remote-Engine-x64.exe
+          Copy-Item .\LICENCE .\brs-artifact\RUSTDESK-AGPL-LICENCE.txt
+          Copy-Item .\BRS_DERIVATIVE.md .\brs-artifact\BRS_DERIVATIVE.md
+          $hash = (Get-FileHash .\brs-artifact\BRS-Remote-Engine-x64.exe -Algorithm SHA256).Hash.ToLower()
+          "$hash  BRS-Remote-Engine-x64.exe" | Set-Content .\brs-artifact\BRS-Remote-Engine-x64.exe.sha256 -Encoding ascii
+          $v = (Get-Item .\brs-artifact\BRS-Remote-Engine-x64.exe).VersionInfo
+          if ($v.ProductName -notmatch 'BRS') { throw 'ProductName is not branded BRS' }
+          if ($v.CompanyName -notmatch 'Burzam') { throw 'CompanyName is not Burzam' }
+          "BRS Remote Engine`nBase: RustDesk OSS 1.4.9`nBootstrap commit: $env:GITHUB_SHA`nBuilt on windows-2022`nSHA256: $hash" | Set-Content .\brs-artifact\BUILD_INFO.txt -Encoding UTF8
+          "BRS Remote Engine is a derivative build based on RustDesk OSS 1.4.9 and remains subject to GNU AGPL v3.0. Corresponding source is this fork plus the verified BRS patch stack." | Set-Content .\brs-artifact\THIRD_PARTY_NOTICES.txt -Encoding UTF8
+
+      - name: Upload BRS Remote Engine
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: BRS-Remote-Engine-Windows-x64
+          path: brs-artifact/
+          if-no-files-found: error
+          retention-days: 14
