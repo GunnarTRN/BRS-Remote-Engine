@@ -1,0 +1,52 @@
+name: Publish BRS Remote Engine validated artifact
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [brs-branding-1.4.9]
+    paths:
+      - '.github/workflows/brs-promote-artifact.yml'
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Download validated artifact from successful run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p brs-release
+          gh run download 35300889209 \
+            --repo "${{ github.repository }}" \
+            --name BRS-Remote-Engine-Windows-x64 \
+            --dir brs-release
+          test -f brs-release/BRS-Remote-Engine-x64.exe
+          test -f brs-release/BRS-Remote-Engine-x64.exe.sha256
+          cd brs-release
+          sha256sum -c BRS-Remote-Engine-x64.exe.sha256
+          test "$(sha256sum BRS-Remote-Engine-x64.exe | awk '{print $1}')" = "c2299755396864ccd53a84fcddeb86b2ac2d7bf0121a3b921cf1a96763b2e0d7"
+
+      - name: Publish immutable CI prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="brs-engine-1.4.9-ci3"
+          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; refusing to overwrite."
+            exit 1
+          fi
+          gh release create "$TAG" brs-release/* \
+            --repo "${{ github.repository }}" \
+            --target da35e1b6940b4c0eae9718c62a5c53935fc03d02 \
+            --title "BRS Remote Engine 1.4.9 CI3" \
+            --notes "Validated Windows x64 CI artifact from successful workflow run 35300889209. Derivative of RustDesk OSS 1.4.9; GNU AGPL v3.0 notices included." \
+            --prerelease
