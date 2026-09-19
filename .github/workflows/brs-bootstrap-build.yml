@@ -72,7 +72,7 @@ jobs:
           PY
           git log -5 --oneline
 
-      - name: Validate BRS source branding gate
+      - name: Validate and brand BRS source
         shell: pwsh
         run: |
           $es = Get-Content .\src\lang\es.rs -Raw
@@ -83,6 +83,20 @@ jobs:
           if (-not $runner.Contains('Burzam')) { throw 'Windows metadata is missing Burzam' }
           $common = Get-Content .\libs\hbb_common\src\config.rs -Raw
           if (-not $common.Contains('RwLock::new("BRS".to_owned())')) { throw 'hbb_common APP_NAME is not BRS' }
+
+          # The final distributable is the upstream self-extracted portable
+          # packer, not the raw Flutter runner. Brand its Windows metadata too.
+          $portablePath = '.\libs\portable\Cargo.toml'
+          $portable = Get-Content $portablePath -Raw
+          $portable = $portable.Replace('description = "RustDesk Remote Desktop"', 'description = "BRS Remote Engine"')
+          $portable = $portable.Replace('LegalCopyright = "Copyright © 2026 Purslane Tech Pte. Ltd. All rights reserved."', 'LegalCopyright = "RustDesk contributors; BRS modifications © 2026 Burzam"')
+          $portable = $portable.Replace('ProductName = "RustDesk"', 'ProductName = "BRS Remote Engine"')
+          $portable = $portable.Replace('OriginalFilename = "rustdesk.exe"', 'OriginalFilename = "BRS-Remote-Engine-x64.exe"')
+          $portable = $portable.Replace('FileDescription = "RustDesk Remote Desktop"', 'FileDescription = "BRS Remote Engine"')
+          Set-Content $portablePath $portable -Encoding UTF8
+          $portableCheck = Get-Content $portablePath -Raw
+          if (-not $portableCheck.Contains('ProductName = "BRS Remote Engine"')) { throw 'Portable packer ProductName is not BRS' }
+          if (-not $portableCheck.Contains('OriginalFilename = "BRS-Remote-Engine-x64.exe"')) { throw 'Portable packer filename is not BRS' }
 
       - name: Install LLVM and Clang
         uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
@@ -155,24 +169,33 @@ jobs:
           cd "$FLUTTER_ROOT"
           git apply flutter_3.24.4_dropdown_menu_enableFilter.diff
 
-      - name: Build BRS Remote Engine
+      - name: Build BRS Remote Engine portable bundle
         shell: pwsh
         env:
           VCPKG_ROOT: C:\vcpkg
         run: |
-          python .\build.py --portable --flutter --skip-portable-pack --hwcodec --vram
-          $src = '.\flutter\build\windows\x64\runner\Release\rustdesk.exe'
-          if (-not (Test-Path $src)) { throw 'Build did not produce rustdesk.exe' }
+          # The raw Flutter runner needs desktop_drop_plugin.dll and the rest
+          # of the Release directory. Build the upstream self-extracted
+          # portable bundle so BRS Setup can safely embed a single EXE.
+          python .\build.py --portable --flutter --hwcodec --vram
+          $src = '.\rustdesk-1.4.9-install.exe'
+          if (-not (Test-Path $src)) { throw 'Portable build did not produce rustdesk-1.4.9-install.exe' }
+
           New-Item -ItemType Directory -Force -Path .\brs-artifact | Out-Null
           Copy-Item $src .\brs-artifact\BRS-Remote-Engine-x64.exe
           Copy-Item .\LICENCE .\brs-artifact\RUSTDESK-AGPL-LICENCE.txt
           Copy-Item .\BRS_DERIVATIVE.md .\brs-artifact\BRS_DERIVATIVE.md
-          $hash = (Get-FileHash .\brs-artifact\BRS-Remote-Engine-x64.exe -Algorithm SHA256).Hash.ToLower()
+
+          $engine = Get-Item .\brs-artifact\BRS-Remote-Engine-x64.exe
+          if ($engine.Length -lt 1000000) { throw "Portable engine unexpectedly small: $($engine.Length) bytes" }
+          $hash = (Get-FileHash $engine.FullName -Algorithm SHA256).Hash.ToLower()
           "$hash  BRS-Remote-Engine-x64.exe" | Set-Content .\brs-artifact\BRS-Remote-Engine-x64.exe.sha256 -Encoding ascii
-          $v = (Get-Item .\brs-artifact\BRS-Remote-Engine-x64.exe).VersionInfo
-          if ($v.ProductName -notmatch 'BRS') { throw 'ProductName is not branded BRS' }
-          if ($v.CompanyName -notmatch 'Burzam') { throw 'CompanyName is not Burzam' }
-          "BRS Remote Engine`nBase: RustDesk OSS 1.4.9`nBootstrap commit: $env:GITHUB_SHA`nBuilt on windows-2022`nSHA256: $hash" | Set-Content .\brs-artifact\BUILD_INFO.txt -Encoding UTF8
+
+          $v = $engine.VersionInfo
+          if ($v.ProductName -notmatch 'BRS') { throw "Portable ProductName is not BRS: $($v.ProductName)" }
+          if ($v.FileDescription -notmatch 'BRS') { throw "Portable FileDescription is not BRS: $($v.FileDescription)" }
+
+          "BRS Remote Engine`nBase: RustDesk OSS 1.4.9`nPackaging: upstream self-extracted portable bundle with complete Flutter runtime`nBootstrap commit: $env:GITHUB_SHA`nBuilt on windows-2022`nSHA256: $hash" | Set-Content .\brs-artifact\BUILD_INFO.txt -Encoding UTF8
           "BRS Remote Engine is a derivative build based on RustDesk OSS 1.4.9 and remains subject to GNU AGPL v3.0. Corresponding source is this fork plus the verified BRS patch stack." | Set-Content .\brs-artifact\THIRD_PARTY_NOTICES.txt -Encoding UTF8
 
       - name: Upload BRS Remote Engine
