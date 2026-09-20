@@ -24,7 +24,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p brs-release
-          gh run download 35300889209 \
+          gh run download 35469234974 \
             --repo "${{ github.repository }}" \
             --name BRS-Remote-Engine-Windows-x64 \
             --dir brs-release
@@ -32,21 +32,21 @@ jobs:
           test -f brs-release/BRS-Remote-Engine-x64.exe.sha256
           cd brs-release
           sha256sum -c BRS-Remote-Engine-x64.exe.sha256
-          test "$(sha256sum BRS-Remote-Engine-x64.exe | awk '{print $1}')" = "c2299755396864ccd53a84fcddeb86b2ac2d7bf0121a3b921cf1a96763b2e0d7"
+          test "$(sha256sum BRS-Remote-Engine-x64.exe | awk '{print $1}')" = "d8ff8eb0eba5ecac20e7c4313e6b8e7513a45b3c5d185ebde3c3e10cb385dfa1"
 
       - name: Publish immutable CI prerelease
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          TAG="brs-engine-1.4.9-ci3"
+          TAG="brs-engine-1.4.9-ci4"
           if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
             echo "Release $TAG already exists; refusing to overwrite."
             exit 1
           fi
           gh release create "$TAG" brs-release/* \
             --repo "${{ github.repository }}" \
-            --target da35e1b6940b4c0eae9718c62a5c53935fc03d02 \
-            --title "BRS Remote Engine 1.4.9 CI3" \
-            --notes "Validated Windows x64 CI artifact from successful workflow run 35300889209. Derivative of RustDesk OSS 1.4.9; GNU AGPL v3.0 notices included." \
+            --target 1c0223fe9c8d33afee3ec6ac88ad6d4304fbb8f6 \
+            --title "BRS Remote Engine 1.4.9 CI4" \
+            --notes "Validated Windows x64 CI artifact from successful workflow run 35469234974. Derivative of RustDesk OSS 1.4.9; GNU AGPL v3.0 notices included." \
             --prerelease
