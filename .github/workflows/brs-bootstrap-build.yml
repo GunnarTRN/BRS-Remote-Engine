@@ -98,6 +98,28 @@ jobs:
           if (-not $portableCheck.Contains('ProductName = "BRS Remote Engine"')) { throw 'Portable packer ProductName is not BRS' }
           if (-not $portableCheck.Contains('OriginalFilename = "BRS-Remote-Engine-x64.exe"')) { throw 'Portable packer filename is not BRS' }
 
+      - name: Pin all Windows icon resources to official BRS
+        shell: pwsh
+        run: |
+          $iconUrl = "$env:PATCH_BASE/brs.ico"
+          Invoke-WebRequest -Uri $iconUrl -OutFile .\brs-official.ico
+          $hash = (Get-FileHash .\brs-official.ico -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne '93b6c425ec4b88d50abc14fbec6c34a498180f85ef85343ad527caaf14b8f503') { throw "BRS icon hash mismatch: $hash" }
+          Copy-Item -Force .\brs-official.ico .\res\icon.ico
+          Copy-Item -Force .\brs-official.ico .\res\tray-icon.ico
+          Copy-Item -Force .\brs-official.ico .\flutter\windows\runner\resources\app_icon.ico
+          Copy-Item -Force .\brs-official.ico .\flutter\assets\icon.ico
+          $targets = @(
+            '.\res\icon.ico',
+            '.\res\tray-icon.ico',
+            '.\flutter\windows\runner\resources\app_icon.ico',
+            '.\flutter\assets\icon.ico'
+          )
+          foreach ($target in $targets) {
+            $targetHash = (Get-FileHash $target -Algorithm SHA256).Hash.ToLower()
+            if ($targetHash -ne $hash) { throw "Icon sync failed for $target: $targetHash" }
+          }
+
       - name: Install LLVM and Clang
         uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
         with:
