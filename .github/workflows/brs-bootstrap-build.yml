@@ -117,7 +117,7 @@ jobs:
           )
           foreach ($target in $targets) {
             $targetHash = (Get-FileHash $target -Algorithm SHA256).Hash.ToLower()
-            if ($targetHash -ne $hash) { throw "Icon sync failed for $target: $targetHash" }
+            if ($targetHash -ne $hash) { throw "Icon sync failed for ${target}: $targetHash" }
           }
 
       - name: Install LLVM and Clang
