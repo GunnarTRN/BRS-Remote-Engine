@@ -215,7 +215,8 @@ jobs:
           Add-Type -AssemblyName System.Drawing
           $exeIcon = [System.Drawing.Icon]::ExtractAssociatedIcon((Resolve-Path $runner))
           if ($null -eq $exeIcon) { throw 'Could not extract final runner associated icon' }
-          $officialIcon = New-Object System.Drawing.Icon((Resolve-Path '.\brs-official.ico'), 32, 32)
+          $officialIconPath = (Resolve-Path '.\brs-official.ico').Path
+          $officialIcon = New-Object System.Drawing.Icon($officialIconPath, 32, 32)
           $exeBmp = $exeIcon.ToBitmap()
           $officialBmp = $officialIcon.ToBitmap()
           if ($exeBmp.Width -ne $officialBmp.Width -or $exeBmp.Height -ne $officialBmp.Height) {
