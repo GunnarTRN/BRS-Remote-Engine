@@ -200,6 +200,36 @@ jobs:
           # of the Release directory. Build the upstream self-extracted
           # portable bundle so BRS Setup can safely embed a single EXE.
           python .\build.py --portable --flutter --hwcodec --vram
+
+          # Validate the FINAL Flutter runner, not only source icon inputs.
+          $release = '.\flutter\build\windows\x64\runner\Release'
+          $runner = Join-Path $release 'rustdesk.exe'
+          $runtimeIcon = Join-Path $release 'data\flutter_assets\assets\icon.ico'
+          if (-not (Test-Path $runner)) { throw 'Final Flutter runner rustdesk.exe is missing' }
+          if (-not (Test-Path $runtimeIcon)) { throw 'Final Flutter runtime icon asset is missing' }
+
+          $expectedIconHash = '93b6c425ec4b88d50abc14fbec6c34a498180f85ef85343ad527caaf14b8f503'
+          $runtimeIconHash = (Get-FileHash $runtimeIcon -Algorithm SHA256).Hash.ToLower()
+          if ($runtimeIconHash -ne $expectedIconHash) { throw "Final Flutter runtime icon mismatch: $runtimeIconHash" }
+
+          Add-Type -AssemblyName System.Drawing
+          $exeIcon = [System.Drawing.Icon]::ExtractAssociatedIcon((Resolve-Path $runner))
+          if ($null -eq $exeIcon) { throw 'Could not extract final runner associated icon' }
+          $officialIcon = New-Object System.Drawing.Icon((Resolve-Path '.\brs-official.ico'), 32, 32)
+          $exeBmp = $exeIcon.ToBitmap()
+          $officialBmp = $officialIcon.ToBitmap()
+          if ($exeBmp.Width -ne $officialBmp.Width -or $exeBmp.Height -ne $officialBmp.Height) {
+            throw "Runner icon dimensions differ from official BRS icon"
+          }
+          for ($y=0; $y -lt $exeBmp.Height; $y++) {
+            for ($x=0; $x -lt $exeBmp.Width; $x++) {
+              if ($exeBmp.GetPixel($x,$y).ToArgb() -ne $officialBmp.GetPixel($x,$y).ToArgb()) {
+                throw "Final runner associated icon differs from official BRS icon at pixel $x,$y"
+              }
+            }
+          }
+          $exeBmp.Dispose(); $officialBmp.Dispose(); $exeIcon.Dispose(); $officialIcon.Dispose()
+
           $src = '.\rustdesk-1.4.9-install.exe'
           if (-not (Test-Path $src)) { throw 'Portable build did not produce rustdesk-1.4.9-install.exe' }
 
