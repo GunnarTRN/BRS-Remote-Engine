@@ -72,6 +72,29 @@ jobs:
           PY
           git log -5 --oneline
 
+      - name: Fix installed BRS executable name
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('src/platform/windows.rs')
+          s = p.read_text(encoding='utf-8')
+          start = s.index('pub fn install_me(')
+          end = s.index('\npub fn run_after_install()', start)
+          block = s[start:end]
+          old = '{copy_exe}\nreg add {subkey} /f'
+          new = '{copy_exe}\n{rename_exe}\nreg add {subkey} /f'
+          assert block.count(old) == 1, 'install copy anchor changed'
+          block = block.replace(old, new, 1)
+          old = '        copy_exe = copy_exe_cmd(&src_exe, &exe, &path)?,'
+          new = old + '\n        rename_exe = rename_exe_cmd(&src_exe, &path)?,'
+          assert block.count(old) == 1, 'install arguments anchor changed'
+          block = block.replace(old, new, 1)
+          p.write_text(s[:start] + block + s[end:], encoding='utf-8')
+          assert block.index('{copy_exe}') < block.index('{rename_exe}') < block.index('{after_install}')
+          print('BRS install now renames the Flutter runner before registry/service creation')
+          PY
+
       - name: Validate and brand BRS source
         shell: pwsh
         run: |
@@ -250,6 +273,54 @@ jobs:
 
           "BRS Remote Engine`nBase: RustDesk OSS 1.4.9`nPackaging: upstream self-extracted portable bundle with complete Flutter runtime`nBootstrap commit: $env:GITHUB_SHA`nBuilt on windows-2022`nSHA256: $hash" | Set-Content .\brs-artifact\BUILD_INFO.txt -Encoding UTF8
           "BRS Remote Engine is a derivative build based on RustDesk OSS 1.4.9 and remains subject to GNU AGPL v3.0. Corresponding source is this fork plus the verified BRS patch stack." | Set-Content .\brs-artifact\THIRD_PARTY_NOTICES.txt -Encoding UTF8
+
+      - name: Verify real silent installation on isolated Windows runner
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $package = (Resolve-Path '.\brs-artifact\BRS-Remote-Engine-x64.exe').Path
+          $expectedExe = Join-Path $env:ProgramFiles 'BRS\brs.exe'
+          if ((Test-Path $expectedExe) -or (Get-Service BRS -ErrorAction SilentlyContinue)) {
+            throw 'Runner is not clean for the BRS installation test'
+          }
+          $launcher = Start-Process -FilePath $package -ArgumentList '--silent-install' -WindowStyle Hidden -PassThru
+          if (-not $launcher.WaitForExit(120000)) { throw 'Portable launcher timed out' }
+          $deadline = (Get-Date).AddSeconds(60)
+          do {
+            $service = Get-CimInstance Win32_Service -Filter "Name='BRS'" -ErrorAction SilentlyContinue
+            if ((Test-Path $expectedExe) -and $service -and $service.State -eq 'Running') { break }
+            Start-Sleep -Seconds 1
+          } while ((Get-Date) -lt $deadline)
+          $arp = Get-ItemProperty 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\BRS' -ErrorAction SilentlyContinue
+          $report = [ordered]@{
+            bootstrap_commit = $env:GITHUB_SHA
+            launcher_exit = $launcher.ExitCode
+            expected_exe = $expectedExe
+            exe_exists = (Test-Path $expectedExe)
+            install_location = $arp.InstallLocation
+            service_state = $service.State
+            service_path = $service.PathName
+            flutter_dll = (Test-Path (Join-Path $env:ProgramFiles 'BRS\flutter_windows.dll'))
+            plugin_dll = (Test-Path (Join-Path $env:ProgramFiles 'BRS\desktop_drop_plugin.dll'))
+          }
+          $report | ConvertTo-Json | Set-Content '.\brs-artifact\INSTALL_SMOKE.json' -Encoding UTF8
+          if (-not $report.exe_exists) { throw 'Installed BRS executable missing' }
+          if ($report.install_location.TrimEnd('\') -ine (Join-Path $env:ProgramFiles 'BRS')) { throw 'InstallLocation mismatch' }
+          if ($report.service_state -ne 'Running') { throw 'BRS service is not running' }
+          if (-not $report.service_path.StartsWith('"' + $expectedExe + '"', [StringComparison]::OrdinalIgnoreCase)) { throw 'Service points at a different executable' }
+          if (-not $report.flutter_dll -or -not $report.plugin_dll) { throw 'Installed Flutter bundle is incomplete' }
+          Stop-Service BRS -ErrorAction Stop
+          Write-Output 'INSTALL_SMOKE_PASS: executable, registry, running service and Flutter dependencies verified'
+
+      - name: Upload installation diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: BRS-Install-Diagnostics
+          path: brs-artifact/INSTALL_SMOKE.json
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Upload BRS Remote Engine
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
