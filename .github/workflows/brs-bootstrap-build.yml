@@ -115,6 +115,34 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'BRS desktop copy patch failed' }
 
 
+      - name: Verify runtime icon helper with Windows compiler
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          p = Path('flutter/windows/runner/win32_window.cpp')
+          s = p.read_text(encoding='utf-8')
+          start = s.index('void ApplyBRSWindowBranding(HWND window) {')
+          block = s[start:]
+          assert block.count('static HICON small =') == 1
+          block = re.sub(r'\bsmall\b', 'brs_small_icon', block)
+          block = re.sub(r'\blarge\b', 'brs_large_icon', block)
+          p.write_text(s[:start] + block, encoding='utf-8')
+          check = Path('.brs-icon-check')
+          check.mkdir(exist_ok=True)
+          (check / 'icon_check.cpp').write_text(
+              '#include <windows.h>\n#include <rpcndr.h>\n#define IDI_APP_ICON 101\n' + block,
+              encoding='utf-8')
+          (check / 'CMakeLists.txt').write_text(
+              'cmake_minimum_required(VERSION 3.20)\nproject(BRSIconCheck LANGUAGES CXX)\n'
+              'add_library(BRSIconCheck STATIC icon_check.cpp)\n'
+              'target_compile_features(BRSIconCheck PRIVATE cxx_std_17)\n',
+              encoding='utf-8')
+          PY
+          cmake -S .brs-icon-check -B .brs-icon-check/build -G "Visual Studio 17 2022" -A x64
+          cmake --build .brs-icon-check/build --config Release
+
       - name: Validate and brand BRS source
         shell: pwsh
         run: |
