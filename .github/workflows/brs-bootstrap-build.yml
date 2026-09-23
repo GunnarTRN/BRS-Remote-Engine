@@ -106,6 +106,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Runtime branding patch check failed' }
           git apply $patch
           if ($LASTEXITCODE -ne 0) { throw 'Runtime branding patch failed' }
+          $copyPatch = '.brs-patches/0006-complete-visible-BRS-desktop-copy.patch'
+          Invoke-WebRequest -Uri "$env:PATCH_BASE/0006-complete-visible-BRS-desktop-copy.patch" -OutFile $copyPatch
+          if ((Get-FileHash $copyPatch -Algorithm SHA256).Hash.ToLower() -ne '0ef421aba38cc572b7e0c03108d20b6883ee1e2ec1ca86470c5820f073b3488b') { throw 'BRS desktop copy patch hash mismatch' }
+          git apply --check $copyPatch
+          if ($LASTEXITCODE -ne 0) { throw 'BRS desktop copy patch check failed' }
+          git apply $copyPatch
+          if ($LASTEXITCODE -ne 0) { throw 'BRS desktop copy patch failed' }
+
 
       - name: Validate and brand BRS source
         shell: pwsh
