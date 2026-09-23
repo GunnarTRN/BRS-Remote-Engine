@@ -95,6 +95,18 @@ jobs:
           print('BRS install now renames the Flutter runner before registry/service creation')
           PY
 
+
+      - name: Apply runtime BRS branding and profile bridge
+        shell: pwsh
+        run: |
+          $patch = '.brs-patches/0005-brand-runtime-windows-and-technician-avatar.patch'
+          Invoke-WebRequest -Uri "$env:PATCH_BASE/0005-brand-runtime-windows-and-technician-avatar.patch" -OutFile $patch
+          if ((Get-FileHash $patch -Algorithm SHA256).Hash.ToLower() -ne 'd7fc3f293ad4cda06e211cbb7448e0381c314b6976d36810552679bec9a41823') { throw 'Runtime branding patch hash mismatch' }
+          git apply --check $patch
+          if ($LASTEXITCODE -ne 0) { throw 'Runtime branding patch check failed' }
+          git apply $patch
+          if ($LASTEXITCODE -ne 0) { throw 'Runtime branding patch failed' }
+
       - name: Validate and brand BRS source
         shell: pwsh
         run: |
@@ -142,6 +154,16 @@ jobs:
             $targetHash = (Get-FileHash $target -Algorithm SHA256).Hash.ToLower()
             if ($targetHash -ne $hash) { throw "Icon sync failed for ${target}: $targetHash" }
           }
+
+
+          # Runtime titlebars and tray also load SVG/PNG assets.
+          Invoke-WebRequest -Uri "$env:PATCH_BASE/brs-runtime-icon.svg" -OutFile .\flutter\assets\icon.svg
+          if ((Get-FileHash .\flutter\assets\icon.svg -Algorithm SHA256).Hash.ToLower() -ne '765c508bd63832b4af92c6008dcd0433b27324628412c06b1be6402d44ed4227') { throw 'BRS runtime SVG mismatch' }
+          Add-Type -AssemblyName System.Drawing
+          $brsIcon = New-Object System.Drawing.Icon((Resolve-Path '.\brs-official.ico').Path, 256, 256)
+          $brsBitmap = $brsIcon.ToBitmap()
+          $brsBitmap.Save((Join-Path (Get-Location) 'flutter\assets\icon.png'), [System.Drawing.Imaging.ImageFormat]::Png)
+          $brsBitmap.Dispose(); $brsIcon.Dispose()
 
       - name: Install LLVM and Clang
         uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
@@ -232,6 +254,12 @@ jobs:
           if (-not (Test-Path $runtimeIcon)) { throw 'Final Flutter runtime icon asset is missing' }
 
           $expectedIconHash = '93b6c425ec4b88d50abc14fbec6c34a498180f85ef85343ad527caaf14b8f503'
+          foreach ($asset in @('icon.png','icon.svg')) {
+            $sourceAsset = Join-Path '.\flutter\assets' $asset
+            $builtAsset = Join-Path $release "data\flutter_assets\assets\$asset"
+            if (-not (Test-Path $builtAsset)) { throw "Missing runtime BRS asset: $asset" }
+            if ((Get-FileHash $sourceAsset).Hash -ne (Get-FileHash $builtAsset).Hash) { throw "Runtime BRS asset changed during build: $asset" }
+          }
           $runtimeIconHash = (Get-FileHash $runtimeIcon -Algorithm SHA256).Hash.ToLower()
           if ($runtimeIconHash -ne $expectedIconHash) { throw "Final Flutter runtime icon mismatch: $runtimeIconHash" }
 
