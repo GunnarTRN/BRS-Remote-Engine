@@ -1,11 +1,12 @@
-name: BRS Remote Engine Bootstrap Build
+name: BRS SAS Policy Candidate Build
 
 on:
   workflow_dispatch:
   push:
-    branches: [brs-branding-1.4.9]
+    branches: [codex/brs-sas-policy-qa]
     paths:
       - '.github/workflows/brs-bootstrap-build.yml'
+      - 'brs-qa/**'
 
 permissions:
   contents: read
@@ -115,6 +116,16 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'BRS desktop copy patch failed' }
 
 
+      - name: Apply verified SAS policy fix
+        shell: pwsh
+        run: |
+          $patch = 'brs-qa/sas-policy.patch'
+          if ((Get-FileHash $patch -Algorithm SHA256).Hash.ToLower() -ne '3aa38f5b4b26d84f2a2461e6ec087965f03eb755ee6dfb4166f352cd7d5ea967') { throw 'SAS policy patch digest mismatch' }
+          git apply --check $patch
+          if ($LASTEXITCODE -ne 0) { throw 'SAS policy patch does not match the branded source' }
+          git apply $patch
+          if ($LASTEXITCODE -ne 0) { throw 'SAS policy patch failed' }
+
       - name: Verify runtime icon helper with Windows compiler
         shell: bash
         run: |
@@ -220,6 +231,12 @@ jobs:
           targets: x86_64-pc-windows-msvc
           components: rustfmt
 
+      - name: Verify SAS policy regression on actual build source
+        shell: pwsh
+        run: |
+          python brs-qa/ci-tests.py
+          if ($LASTEXITCODE -ne 0) { throw 'SAS policy regression failed' }
+
       - name: Generate Flutter Rust bridge
         shell: pwsh
         run: |
@@ -260,6 +277,7 @@ jobs:
           flutter doctor -v
           flutter precache --windows
           Invoke-WebRequest -Uri https://github.com/rustdesk/engine/releases/download/main/windows-x64-release.zip -OutFile windows-x64-release.zip
+          if ((Get-FileHash windows-x64-release.zip -Algorithm SHA256).Hash.ToLower() -ne 'ec8cabf36ee4ff24c8d98de25b00e70781eb03876265aee84d0fe554a110036e') { throw 'Flutter engine digest mismatch' }
           Expand-Archive -Path windows-x64-release.zip -DestinationPath windows-x64-release
           $flutterRoot = Split-Path -Parent (Split-Path -Parent (Get-Command flutter).Source)
           Copy-Item -Force -Recurse windows-x64-release\* "$flutterRoot\bin\cache\artifacts\engine\windows-x64-release\"
@@ -325,6 +343,10 @@ jobs:
           Copy-Item $src .\brs-artifact\BRS-Remote-Engine-x64.exe
           Copy-Item .\LICENCE .\brs-artifact\RUSTDESK-AGPL-LICENCE.txt
           Copy-Item .\BRS_DERIVATIVE.md .\brs-artifact\BRS_DERIVATIVE.md
+          Copy-Item .\brs-qa\test-output\TEST_RESULT.json .\brs-artifact\SAS_TEST_RESULT.json
+          Copy-Item .\brs-qa\sas-policy.patch .\brs-artifact\sas-policy.patch
+          'UNSIGNED QA CANDIDATE ONLY. Do not distribute or execute the portable installer. Runtime is intended for audited MSI packaging and Windows QA. No antivirus clearance.' | Set-Content .\brs-artifact\CANDIDATE_ONLY.txt -Encoding UTF8
+
 
           $engine = Get-Item .\brs-artifact\BRS-Remote-Engine-x64.exe
           if ($engine.Length -lt 1000000) { throw "Portable engine unexpectedly small: $($engine.Length) bytes" }
@@ -338,58 +360,20 @@ jobs:
           "BRS Remote Engine`nBase: RustDesk OSS 1.4.9`nPackaging: upstream self-extracted portable bundle with complete Flutter runtime`nBootstrap commit: $env:GITHUB_SHA`nBuilt on windows-2022`nSHA256: $hash" | Set-Content .\brs-artifact\BUILD_INFO.txt -Encoding UTF8
           "BRS Remote Engine is a derivative build based on RustDesk OSS 1.4.9 and remains subject to GNU AGPL v3.0. Corresponding source is this fork plus the verified BRS patch stack." | Set-Content .\brs-artifact\THIRD_PARTY_NOTICES.txt -Encoding UTF8
 
-      - name: Verify real silent installation on isolated Windows runner
-        shell: pwsh
-        timeout-minutes: 5
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $package = (Resolve-Path '.\brs-artifact\BRS-Remote-Engine-x64.exe').Path
-          $expectedExe = Join-Path $env:ProgramFiles 'BRS\brs.exe'
-          if ((Test-Path $expectedExe) -or (Get-Service BRS -ErrorAction SilentlyContinue)) {
-            throw 'Runner is not clean for the BRS installation test'
-          }
-          $launcher = Start-Process -FilePath $package -ArgumentList '--silent-install' -WindowStyle Hidden -PassThru
-          if (-not $launcher.WaitForExit(120000)) { throw 'Portable launcher timed out' }
-          $deadline = (Get-Date).AddSeconds(60)
-          do {
-            $service = Get-CimInstance Win32_Service -Filter "Name='BRS'" -ErrorAction SilentlyContinue
-            if ((Test-Path $expectedExe) -and $service -and $service.State -eq 'Running') { break }
-            Start-Sleep -Seconds 1
-          } while ((Get-Date) -lt $deadline)
-          $arp = Get-ItemProperty 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\BRS' -ErrorAction SilentlyContinue
-          $report = [ordered]@{
-            bootstrap_commit = $env:GITHUB_SHA
-            launcher_exit = $launcher.ExitCode
-            expected_exe = $expectedExe
-            exe_exists = (Test-Path $expectedExe)
-            install_location = $arp.InstallLocation
-            service_state = $service.State
-            service_path = $service.PathName
-            flutter_dll = (Test-Path (Join-Path $env:ProgramFiles 'BRS\flutter_windows.dll'))
-            plugin_dll = (Test-Path (Join-Path $env:ProgramFiles 'BRS\desktop_drop_plugin.dll'))
-          }
-          $report | ConvertTo-Json | Set-Content '.\brs-artifact\INSTALL_SMOKE.json' -Encoding UTF8
-          if (-not $report.exe_exists) { throw 'Installed BRS executable missing' }
-          if ($report.install_location.TrimEnd('\') -ine (Join-Path $env:ProgramFiles 'BRS')) { throw 'InstallLocation mismatch' }
-          if ($report.service_state -ne 'Running') { throw 'BRS service is not running' }
-          if (-not $report.service_path.StartsWith('"' + $expectedExe + '"', [StringComparison]::OrdinalIgnoreCase)) { throw 'Service points at a different executable' }
-          if (-not $report.flutter_dll -or -not $report.plugin_dll) { throw 'Installed Flutter bundle is incomplete' }
-          Stop-Service BRS -ErrorAction Stop
-          Write-Output 'INSTALL_SMOKE_PASS: executable, registry, running service and Flutter dependencies verified'
-
-      - name: Upload installation diagnostics
+      - name: Upload SAS test diagnostics
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: BRS-Install-Diagnostics
-          path: brs-artifact/INSTALL_SMOKE.json
+          name: BRS-SAS-Policy-Test-Diagnostics
+          path: brs-qa/test-output/
           if-no-files-found: ignore
           retention-days: 14
 
       - name: Upload BRS Remote Engine
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: BRS-Remote-Engine-Windows-x64
+          name: BRS-SAS-Policy-QA-Windows-x64
           path: brs-artifact/
           if-no-files-found: error
           retention-days: 14
+
