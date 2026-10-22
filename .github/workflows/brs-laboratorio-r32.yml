@@ -1,0 +1,316 @@
+name: BRS Laboratory R32 Windows Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/brs-laboratorio-r32]
+    paths:
+      - '.github/workflows/brs-laboratorio-r32.yml'
+      - 'laboratory-r32/**'
+
+permissions:
+  contents: read
+
+env:
+  RUST_VERSION: '1.75'
+  LLVM_VERSION: '15.0.6'
+  FLUTTER_VERSION: '3.24.5'
+  VCPKG_COMMIT_ID: '120deac3062162151622ca4860575a33844ba10b'
+  HBB_COMMON_UPSTREAM: '7e1c392c62d39c364127307cd408421dd5f8cfb0'
+  PATCH_BASE: 'https://brs.burzam.com/source/brs-remote-engine-1.4.9'
+
+jobs:
+  build-windows-x64:
+    name: BRS Remote Engine x64
+    runs-on: windows-2022
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout RustDesk 1.4.9 fork
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          submodules: recursive
+
+      - name: Fetch and verify BRS patch stack
+        shell: pwsh
+        run: |
+          $patches = @(
+            @{ Name='0001-create-BRS-Remote-Engine-branding-baseline.patch'; Sha='a3e34c04c722dc2dcb91b46ccb7634c6874657c084cdbd2a0f1b2956f0d8d3aa' },
+            @{ Name='0002-add-BRS-Windows-x64-CI-build-workflow.patch'; Sha='5a9a5505d746db8f88c30dcdf35ab7af53beaa3a4c53522419e19d7477bd23c6' },
+            @{ Name='0003-brand-Spanish-Remote-Engine-UI-as-BRS.patch'; Sha='6195b3b22275b4a0e311dbe0120c5c17ef26c0564e6b1d9cff5a71e59dfc7bf9' },
+            @{ Name='0004-harden-BRS-Windows-CI-and-branding-gate.patch'; Sha='8f75a53a746affba5d423d152475867469dadef855156506ef6218061d90ecaf' }
+          )
+          New-Item -ItemType Directory -Force -Path .brs-patches | Out-Null
+          foreach ($p in $patches) {
+            $dst = Join-Path '.brs-patches' $p.Name
+            Invoke-WebRequest -Uri "$env:PATCH_BASE/$($p.Name)" -OutFile $dst
+            $actual = (Get-FileHash $dst -Algorithm SHA256).Hash.ToLower()
+            if ($actual -ne $p.Sha) { throw "Patch hash mismatch for $($p.Name): $actual" }
+          }
+
+      - name: Apply BRS derivative patches
+        shell: bash
+        run: |
+          git config user.name "Burzam Build"
+          git config user.email "build@burzam.local"
+          git am .brs-patches/0001-create-BRS-Remote-Engine-branding-baseline.patch \
+                 .brs-patches/0002-add-BRS-Windows-x64-CI-build-workflow.patch \
+                 .brs-patches/0003-brand-Spanish-Remote-Engine-UI-as-BRS.patch \
+                 .brs-patches/0004-harden-BRS-Windows-CI-and-branding-gate.patch
+          # The BRS hbb_common delta is one identity line. Keep the public
+          # upstream submodule revision available in the fork, then apply the
+          # BRS identity deterministically in the checked-out submodule.
+          git -C libs/hbb_common checkout "$HBB_COMMON_UPSTREAM"
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('libs/hbb_common/src/config.rs')
+          s = p.read_text(encoding='utf-8')
+          old = 'pub static ref APP_NAME: RwLock<String> = RwLock::new("RustDesk".to_owned());'
+          new = 'pub static ref APP_NAME: RwLock<String> = RwLock::new("BRS".to_owned());'
+          if old not in s:
+              raise SystemExit('Expected hbb_common APP_NAME baseline not found')
+          p.write_text(s.replace(old, new, 1), encoding='utf-8')
+          PY
+          git log -5 --oneline
+
+      - name: Fix installed BRS executable name
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('src/platform/windows.rs')
+          s = p.read_text(encoding='utf-8')
+          start = s.index('pub fn install_me(')
+          end = s.index('\npub fn run_after_install()', start)
+          block = s[start:end]
+          old = '{copy_exe}\nreg add {subkey} /f'
+          new = '{copy_exe}\n{rename_exe}\nreg add {subkey} /f'
+          assert block.count(old) == 1, 'install copy anchor changed'
+          block = block.replace(old, new, 1)
+          old = '        copy_exe = copy_exe_cmd(&src_exe, &exe, &path)?,'
+          new = old + '\n        rename_exe = rename_exe_cmd(&src_exe, &path)?,'
+          assert block.count(old) == 1, 'install arguments anchor changed'
+          block = block.replace(old, new, 1)
+          p.write_text(s[:start] + block + s[end:], encoding='utf-8')
+          assert block.index('{copy_exe}') < block.index('{rename_exe}') < block.index('{after_install}')
+          print('BRS install now renames the Flutter runner before registry/service creation')
+          PY
+
+
+      - name: Apply runtime BRS branding and profile bridge
+        shell: pwsh
+        run: |
+          $patch = '.brs-patches/0005-brand-runtime-windows-and-technician-avatar.patch'
+          Invoke-WebRequest -Uri "$env:PATCH_BASE/0005-brand-runtime-windows-and-technician-avatar.patch" -OutFile $patch
+          if ((Get-FileHash $patch -Algorithm SHA256).Hash.ToLower() -ne 'd7fc3f293ad4cda06e211cbb7448e0381c314b6976d36810552679bec9a41823') { throw 'Runtime branding patch hash mismatch' }
+          git apply --check $patch
+          if ($LASTEXITCODE -ne 0) { throw 'Runtime branding patch check failed' }
+          git apply $patch
+          if ($LASTEXITCODE -ne 0) { throw 'Runtime branding patch failed' }
+          $copyPatch = '.brs-patches/0006-complete-visible-BRS-desktop-copy.patch'
+          Invoke-WebRequest -Uri "$env:PATCH_BASE/0006-complete-visible-BRS-desktop-copy.patch" -OutFile $copyPatch
+          if ((Get-FileHash $copyPatch -Algorithm SHA256).Hash.ToLower() -ne '0ef421aba38cc572b7e0c03108d20b6883ee1e2ec1ca86470c5820f073b3488b') { throw 'BRS desktop copy patch hash mismatch' }
+          git apply --check $copyPatch
+          if ($LASTEXITCODE -ne 0) { throw 'BRS desktop copy patch check failed' }
+          git apply $copyPatch
+          if ($LASTEXITCODE -ne 0) { throw 'BRS desktop copy patch failed' }
+
+
+      - name: Verify runtime icon helper with Windows compiler
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          p = Path('flutter/windows/runner/win32_window.cpp')
+          s = p.read_text(encoding='utf-8')
+          start = s.index('void ApplyBRSWindowBranding(HWND window) {')
+          block = s[start:]
+          assert block.count('static HICON small =') == 1
+          block = re.sub(r'\bsmall\b', 'brs_small_icon', block)
+          block = re.sub(r'\blarge\b', 'brs_large_icon', block)
+          p.write_text(s[:start] + block, encoding='utf-8')
+          check = Path('.brs-icon-check')
+          check.mkdir(exist_ok=True)
+          (check / 'icon_check.cpp').write_text(
+              '#include <windows.h>\n#include <rpcndr.h>\n#define IDI_APP_ICON 101\n' + block,
+              encoding='utf-8')
+          (check / 'CMakeLists.txt').write_text(
+              'cmake_minimum_required(VERSION 3.20)\nproject(BRSIconCheck LANGUAGES CXX)\n'
+              'add_library(BRSIconCheck STATIC icon_check.cpp)\n'
+              'target_compile_features(BRSIconCheck PRIVATE cxx_std_17)\n',
+              encoding='utf-8')
+          PY
+          cmake -S .brs-icon-check -B .brs-icon-check/build -G "Visual Studio 17 2022" -A x64
+          cmake --build .brs-icon-check/build --config Release
+
+      - name: Validate and brand BRS source
+        shell: pwsh
+        run: |
+          $es = Get-Content .\src\lang\es.rs -Raw
+          $forbidden = @('Verificar la contraseña de RustDesk','Mostrar RustDesk','Acerca de RustDesk','Conexión a la red RustDesk','Con tecnología de RustDesk')
+          foreach ($text in $forbidden) { if ($es.Contains($text)) { throw "Residual upstream UI text found: $text" } }
+          $runner = Get-Content .\flutter\windows\runner\Runner.rc -Raw
+          if (-not $runner.Contains('BRS Remote Engine')) { throw 'Windows metadata is missing BRS Remote Engine' }
+          if (-not $runner.Contains('Burzam')) { throw 'Windows metadata is missing Burzam' }
+          $common = Get-Content .\libs\hbb_common\src\config.rs -Raw
+          if (-not $common.Contains('RwLock::new("BRS".to_owned())')) { throw 'hbb_common APP_NAME is not BRS' }
+
+          # The final distributable is the upstream self-extracted portable
+          # packer, not the raw Flutter runner. Brand its Windows metadata too.
+          $portablePath = '.\libs\portable\Cargo.toml'
+          $portable = Get-Content $portablePath -Raw
+          $portable = $portable.Replace('description = "RustDesk Remote Desktop"', 'description = "BRS Remote Engine"')
+          $portable = $portable.Replace('LegalCopyright = "Copyright © 2026 Purslane Tech Pte. Ltd. All rights reserved."', 'LegalCopyright = "RustDesk contributors; BRS modifications © 2026 Burzam"')
+          $portable = $portable.Replace('ProductName = "RustDesk"', 'ProductName = "BRS Remote Engine"')
+          $portable = $portable.Replace('OriginalFilename = "rustdesk.exe"', 'OriginalFilename = "BRS-Remote-Engine-x64.exe"')
+          $portable = $portable.Replace('FileDescription = "RustDesk Remote Desktop"', 'FileDescription = "BRS Remote Engine"')
+          Set-Content $portablePath $portable -Encoding UTF8
+          $portableCheck = Get-Content $portablePath -Raw
+          if (-not $portableCheck.Contains('ProductName = "BRS Remote Engine"')) { throw 'Portable packer ProductName is not BRS' }
+          if (-not $portableCheck.Contains('OriginalFilename = "BRS-Remote-Engine-x64.exe"')) { throw 'Portable packer filename is not BRS' }
+
+      - name: Pin all Windows icon resources to official BRS
+        shell: pwsh
+        run: |
+          $iconUrl = "$env:PATCH_BASE/brs.ico"
+          Invoke-WebRequest -Uri $iconUrl -OutFile .\brs-official.ico
+          $hash = (Get-FileHash .\brs-official.ico -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne '93b6c425ec4b88d50abc14fbec6c34a498180f85ef85343ad527caaf14b8f503') { throw "BRS icon hash mismatch: $hash" }
+          Copy-Item -Force .\brs-official.ico .\res\icon.ico
+          Copy-Item -Force .\brs-official.ico .\res\tray-icon.ico
+          Copy-Item -Force .\brs-official.ico .\flutter\windows\runner\resources\app_icon.ico
+          Copy-Item -Force .\brs-official.ico .\flutter\assets\icon.ico
+          $targets = @(
+            '.\res\icon.ico',
+            '.\res\tray-icon.ico',
+            '.\flutter\windows\runner\resources\app_icon.ico',
+            '.\flutter\assets\icon.ico'
+          )
+          foreach ($target in $targets) {
+            $targetHash = (Get-FileHash $target -Algorithm SHA256).Hash.ToLower()
+            if ($targetHash -ne $hash) { throw "Icon sync failed for ${target}: $targetHash" }
+          }
+
+
+          # Runtime titlebars and tray also load SVG/PNG assets.
+          Invoke-WebRequest -Uri "$env:PATCH_BASE/brs-runtime-icon.svg" -OutFile .\flutter\assets\icon.svg
+          if ((Get-FileHash .\flutter\assets\icon.svg -Algorithm SHA256).Hash.ToLower() -ne '765c508bd63832b4af92c6008dcd0433b27324628412c06b1be6402d44ed4227') { throw 'BRS runtime SVG mismatch' }
+          Add-Type -AssemblyName System.Drawing
+          $brsIcon = New-Object System.Drawing.Icon((Resolve-Path '.\brs-official.ico').Path, 256, 256)
+          $brsBitmap = $brsIcon.ToBitmap()
+          $brsBitmap.Save((Join-Path (Get-Location) 'flutter\assets\icon.png'), [System.Drawing.Imaging.ImageFormat]::Png)
+          $brsBitmap.Dispose(); $brsIcon.Dispose()
+
+      - name: Install LLVM and Clang
+        uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
+        with:
+          version: ${{ env.LLVM_VERSION }}
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@2783a3f08e1baf891508463f8c6653c258246225 # v2.12.0
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          architecture: x64
+
+      - name: Prepare Rust
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: x86_64-pc-windows-msvc
+          components: rustfmt
+
+      - name: Generate Flutter Rust bridge
+        shell: pwsh
+        run: |
+          cargo install cargo-expand --version 1.0.95 --locked
+          cargo install flutter_rust_bridge_codegen --version 1.80.1 --features "uuid" --locked
+          Push-Location .\flutter
+          flutter pub get
+          Pop-Location
+          flutter_rust_bridge_codegen --rust-input .\src\flutter_ffi.rs --dart-output .\flutter\lib\generated_bridge.dart --c-output .\flutter\macos\Runner\bridge_generated.h
+          Copy-Item -Force .\flutter\macos\Runner\bridge_generated.h .\flutter\ios\Runner\bridge_generated.h
+          $required = @(
+            '.\src\bridge_generated.rs',
+            '.\src\bridge_generated.io.rs',
+            '.\flutter\lib\generated_bridge.dart',
+            '.\flutter\lib\generated_bridge.freezed.dart'
+          )
+          foreach ($path in $required) {
+            if (-not (Test-Path $path)) { throw "Bridge generation did not create $path" }
+          }
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
+        with:
+          vcpkgDirectory: C:\vcpkg
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          doNotCache: false
+
+      - name: Install native dependencies
+        shell: bash
+        env:
+          VCPKG_DEFAULT_HOST_TRIPLET: x64-windows-static
+        run: |
+          "$VCPKG_ROOT/vcpkg" install --triplet x64-windows-static --x-install-root="$VCPKG_ROOT/installed"
+
+      - name: Prepare Flutter engine
+        shell: pwsh
+        run: |
+          flutter doctor -v
+          flutter precache --windows
+          Invoke-WebRequest -Uri https://github.com/rustdesk/engine/releases/download/main/windows-x64-release.zip -OutFile windows-x64-release.zip
+          Expand-Archive -Path windows-x64-release.zip -DestinationPath windows-x64-release
+          $flutterRoot = Split-Path -Parent (Split-Path -Parent (Get-Command flutter).Source)
+          Copy-Item -Force -Recurse windows-x64-release\* "$flutterRoot\bin\cache\artifacts\engine\windows-x64-release\"
+
+      - name: Apply Flutter 3.24 compatibility patch
+        shell: bash
+        run: |
+          FLUTTER_ROOT="$(dirname "$(dirname "$(which flutter)")")"
+          cp .github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff "$FLUTTER_ROOT/"
+          cd "$FLUTTER_ROOT"
+          git apply flutter_3.24.4_dropdown_menu_enableFilter.diff
+
+
+      - name: Apply isolated laboratory policy
+        shell: pwsh
+        run: |
+          python laboratory-r32/apply_lab_isolation.py
+          if ($LASTEXITCODE -ne 0) { throw 'Laboratory isolation failed' }
+
+      - name: Compile isolated Windows runtime
+        shell: pwsh
+        env:
+          VCPKG_ROOT: C:\vcpkg
+        run: |
+          python .\build.py --portable --flutter --skip-portable-pack --hwcodec --vram
+          if ($LASTEXITCODE -ne 0) { throw 'Laboratory build failed' }
+          $release = '.\flutter\build\windows\x64\runner\Release'
+          if (-not (Test-Path "$release\rustdesk.exe")) { throw 'Missing Windows runtime' }
+          New-Item -ItemType Directory -Force brs-laboratory-r32 | Out-Null
+          Copy-Item "$release\*" brs-laboratory-r32 -Recurse
+          Rename-Item brs-laboratory-r32\rustdesk.exe BRS-Laboratorio-R32.exe
+          Copy-Item LICENCE brs-laboratory-r32\RUSTDESK-AGPL-LICENCE.txt
+          Copy-Item LAB_ISOLATION.json brs-laboratory-r32
+          @(
+            'BRS Laboratorio R32 — motor remoto aislado',
+            "Source commit: $env:GITHUB_SHA",
+            "Build run: $env:GITHUB_RUN_ID",
+            'Private transport required: 127.0.0.1:22116 and 127.0.0.1:22117',
+            'Arrendamiento remains simulation only. No financial restrictions.',
+            'Build candidate; not approved for P01/P02 until isolation runtime tests pass.'
+          ) | Set-Content brs-laboratory-r32\BUILD_INFO.txt -Encoding UTF8
+          Get-ChildItem brs-laboratory-r32 -File -Recurse | Get-FileHash -Algorithm SHA256 |
+            Select-Object Path,Hash | ConvertTo-Json | Set-Content brs-laboratory-r32\HASHES.json
+          git diff --binary | Set-Content brs-laboratory-r32\source-changes.patch -Encoding UTF8
+          git -C libs/hbb_common diff --binary | Set-Content brs-laboratory-r32\hbb-common-changes.patch -Encoding UTF8
+
+      - name: Upload isolated laboratory candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: BRS-Laboratorio-R32-Windows-x64-CANDIDATE
+          path: brs-laboratory-r32/
+          if-no-files-found: error
+          retention-days: 14
