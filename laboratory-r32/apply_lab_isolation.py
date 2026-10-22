@@ -20,6 +20,10 @@ edit(cfg,'pub fn get_option(k: &str) -> String {','pub fn get_option(k: &str) ->
 for name in ['is_disable_installation','is_disable_account','is_disable_ab','is_disable_settings','is_disable_tcp_listen']:
  edit(cfg,f'pub fn {name}() -> bool {{',f'pub fn {name}() -> bool {{\n    return true;')
 common='src/common.rs'
+edit('src/lan.rs','pub(super) fn start_listening() -> ResultType<()> {','pub(super) fn start_listening() -> ResultType<()> {\n    return Ok(());')
+edit('src/lan.rs','pub async fn discover() -> ResultType<()> {','pub async fn discover() -> ResultType<()> {\n    return Ok(());')
+edit('src/lan.rs','pub fn send_wol(id: String) {','pub fn send_wol(id: String) {\n    return;')
+edit(common,'pub async fn test_ipv6() -> Option<tokio::task::JoinHandle<()>> {','pub async fn test_ipv6() -> Option<tokio::task::JoinHandle<()>> {\n    return None;')
 edit(common,'pub fn read_custom_client(config: &str) {','pub fn read_custom_client(config: &str) {\n    return; // Lab identity cannot be replaced by custom-client data.')
 edit(common,'pub fn check_software_update() {','pub fn check_software_update() {\n    return; // Lab builds have no updater.')
 edit(common,'pub fn get_custom_rendezvous_server(custom: String) -> String {','pub fn get_custom_rendezvous_server(custom: String) -> String {\n    return "127.0.0.1:22116".to_owned();')
