@@ -14,7 +14,7 @@ edit(cfg,'RwLock::new("BRS".to_owned())',f'RwLock::new("{identity}".to_owned())'
 edit(cfg,'&["rs-ny.rustdesk.com"]','&["127.0.0.1:22116"]')
 edit(cfg,'pub fn get_rendezvous_server() -> String {','pub fn get_rendezvous_server() -> String {\n        return "127.0.0.1:22116".to_owned();')
 edit(cfg,'pub fn get_rendezvous_servers() -> Vec<String> {','pub fn get_rendezvous_servers() -> Vec<String> {\n        return vec!["127.0.0.1:22116".to_owned()];')
-options={'custom-rendezvous-server':'127.0.0.1:22116','relay-server':'127.0.0.1:22117','key':key,'api-server':'','approve-mode':'click','force-always-relay':'Y','direct-server':'N','enable-lan-discovery':'N','enable-remote-printer':'N','enable-file-transfer':'N','enable-tunnel':'N','enable-terminal':'N','disable-udp':'Y','allow-websocket':'N','allow-remote-config-modification':'N','enable-check-update':'N'}
+options={'custom-rendezvous-server':'127.0.0.1:22116','relay-server':'127.0.0.1:22117','key':key,'api-server':'','approve-mode':'click','force-always-relay':'Y','direct-server':'N','enable-lan-discovery':'N','enable-remote-printer':'N','enable-file-transfer':'N','enable-tunnel':'N','enable-terminal':'N','enable-privacy-mode':'N','disable-udp':'Y','allow-websocket':'N','allow-remote-config-modification':'N','enable-check-update':'N'}
 match='\n        match k {\n'+''.join(f'            {json.dumps(k)} => return {json.dumps(v)}.to_owned(),\n' for k,v in options.items())+'            _ => {}\n        }\n'
 edit(cfg,'pub fn get_option(k: &str) -> String {','pub fn get_option(k: &str) -> String {'+match)
 for name in ['is_disable_installation','is_disable_account','is_disable_ab','is_disable_settings','is_disable_tcp_listen']:
@@ -28,6 +28,7 @@ edit(common,'pub fn read_custom_client(config: &str) {','pub fn read_custom_clie
 edit(common,'pub fn check_software_update() {','pub fn check_software_update() {\n    return; // Lab builds have no updater.')
 edit(common,'pub fn get_custom_rendezvous_server(custom: String) -> String {','pub fn get_custom_rendezvous_server(custom: String) -> String {\n    return "127.0.0.1:22116".to_owned();')
 edit(common,'pub fn get_api_server(api: String, custom: String) -> String {','pub fn get_api_server(api: String, custom: String) -> String {\n    return String::new();')
+edit('src/platform/windows.rs','fn get_valid_subkey() -> String {','fn get_valid_subkey() -> String {\n    return get_subkey(&crate::get_app_name(), false);')
 core='src/core_main.rs'
 guard=r'''
     // Lab portable only: reject installation, service, elevation and URI entrypoints.
