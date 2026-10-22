@@ -44,6 +44,7 @@ edit(core,'pub fn core_main() -> Option<Vec<String>> {','pub fn core_main() -> O
 # No automatic elevated portable service or cleanup of shared update staging.
 edit(core,'crate::portable_service::client::set_quick_support(_is_quick_support);','_is_quick_support = false;\n        crate::portable_service::client::set_quick_support(false);')
 edit(core,'crate::platform::try_remove_temp_update_files();','// Lab: do not touch shared update staging.')
+edit('src/client.rs','self.force_relay =\n            config::option2bool','self.force_relay =\n            true || config::option2bool')
 # Refuse direct addresses or custom server syntax at outgoing connection boundary.
 edit('src/client.rs','debug_assert!(peer == interface.get_id());','if peer.is_empty() || !peer.bytes().all(|c| c.is_ascii_digit()) {\n            bail!("Laboratorio: utiliza solamente un ID del laboratorio");\n        }\n        debug_assert!(peer == interface.get_id());')
 for rel in ['flutter/windows/runner/main.cpp','flutter/windows/runner/win32_window.cpp']:
