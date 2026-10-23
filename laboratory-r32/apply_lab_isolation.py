@@ -55,6 +55,36 @@ for rel in ['flutter/windows/runner/main.cpp','flutter/windows/runner/win32_wind
 # Isolate every remaining literal branding profile bridge filename.
 for rel in ['src/client.rs']:
  p=ROOT/rel;s=p.read_text().replace('BRS-technician-avatar.txt','BRS-Laboratorio-R32-technician-avatar.txt');p.write_text(s);changed[rel]=hashlib.sha256(p.read_bytes()).hexdigest()
-report={'revision':'R32','lease_mode':'simulation','restrictions_enabled':False,'identity':identity,'rendezvous':'127.0.0.1:22116','relay':'127.0.0.1:22117','private_transport_required':True,'compiled':False,'files':changed}
+
+# R32.1: the outgoing IPC path must expose the same pinned lab options.
+option_inserts=''.join(f'        res.insert({json.dumps(k)}.to_owned(), {json.dumps(v)}.to_owned());\n' for k,v in options.items())
+edit(cfg,'        res.extend(OVERWRITE_SETTINGS.read().unwrap().clone());\n        res',
+     '        res.extend(OVERWRITE_SETTINGS.read().unwrap().clone());\n'+option_inserts+'        res')
+edit(common,'pub async fn get_key(sync: bool) -> String {',
+     'pub async fn get_key(sync: bool) -> String {\n    return Config::get_option("key"); // Lab key shared by incoming and outgoing paths.')
+cursor_policy='''// Laboratory cursor visibility: never hide the local pointer without a replacement.
+bool labHideLocalCursor({
+  required bool remoteMoved,
+  required bool showRemote,
+  required bool hasRemoteImage,
+}) => remoteMoved && showRemote && hasRemoteImage;
+'''
+policy_path=ROOT/'flutter/lib/lab_cursor_policy.dart'
+policy_path.write_text(cursor_policy)
+changed['flutter/lib/lab_cursor_policy.dart']=hashlib.sha256(policy_path.read_bytes()).hexdigest()
+remote='flutter/lib/desktop/pages/remote_page.dart'
+p=ROOT/remote
+p.write_text("import '../../lab_cursor_policy.dart';\n"+p.read_text())
+edit(remote,'    final m = Provider.of<ImageModel>(context);\n    var c = Provider.of<CanvasModel>(context);',
+            '    final m = Provider.of<ImageModel>(context);\n    final labCursor = Provider.of<CursorModel>(context);\n    var c = Provider.of<CanvasModel>(context);')
+edit(remote,'if (remoteCursorMoved.isTrue) {',
+            'if (labHideLocalCursor(remoteMoved: remoteCursorMoved.isTrue,\n'
+            '                                      showRemote: ShowRemoteCursorState.find(id).value,\n'
+            '                                      hasRemoteImage: (labCursor.image ?? preDefaultCursor.image) != null)) {')
+edit(remote,'    return buildCursorOfCache(cursor, scale, cache);',
+            '    if (cache == null || cache.data == null) return SystemMouseCursors.basic;\n'
+            '    return buildCursorOfCache(cursor, scale, cache);')
+
+report={'revision':'R32.1','lease_mode':'simulation','restrictions_enabled':False,'identity':identity,'rendezvous':'127.0.0.1:22116','relay':'127.0.0.1:22117','private_transport_required':True,'compiled':False,'files':changed}
 Path('LAB_ISOLATION.json').write_text(json.dumps(report,indent=2))
 print('LAB_ISOLATION_PATCH_APPLIED',len(changed))

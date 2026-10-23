@@ -1,4 +1,4 @@
-name: BRS Laboratory R32 Windows Build
+name: BRS Laboratory R32.1 Windows Build
 
 on:
   workflow_dispatch:
@@ -220,6 +220,12 @@ jobs:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           architecture: x64
 
+      - name: Test laboratory cursor visibility
+        shell: pwsh
+        run: |
+          dart laboratory-r32/test_cursor_policy.dart
+          if ($LASTEXITCODE -ne 0) { throw 'Cursor visibility regression' }
+
       - name: Prepare Rust
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
@@ -310,7 +316,7 @@ jobs:
       - name: Upload isolated laboratory candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: BRS-Laboratorio-R32-Windows-x64-CANDIDATE
+          name: BRS-Laboratorio-R32.1-Windows-x64-CANDIDATE
           path: brs-laboratory-r32/
           if-no-files-found: error
           retention-days: 14
