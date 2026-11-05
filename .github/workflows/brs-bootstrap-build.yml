@@ -3,7 +3,7 @@ name: BRS Remote Engine Bootstrap Build
 on:
   workflow_dispatch:
   push:
-    branches: [brs-branding-1.4.9]
+    branches: [brs-branding-1.4.9, codex/brs-consent-3.2.16]
     paths:
       - '.github/workflows/brs-bootstrap-build.yml'
 
@@ -114,6 +114,12 @@ jobs:
           git apply $copyPatch
           if ($LASTEXITCODE -ne 0) { throw 'BRS desktop copy patch failed' }
 
+
+      - name: Apply BRS consent-only session mode
+        shell: bash
+        run: |
+          git apply --check .github/patches/brs-consent-only.patch
+          git apply .github/patches/brs-consent-only.patch
 
       - name: Verify runtime icon helper with Windows compiler
         shell: bash
