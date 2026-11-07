@@ -371,19 +371,48 @@ index ac48dfb..52a4e9c 100644
        required bool forceRelay,
        required String password,
        required bool isSharedPassword,
+diff --git a/libs/clipboard/src/lib.rs b/libs/clipboard/src/lib.rs
+index 5ce9afe..a2e0d2d 100644
+--- a/libs/clipboard/src/lib.rs
++++ b/libs/clipboard/src/lib.rs
+@@ -206,6 +206,23 @@ pub fn get_rx_cliprdr_client(
+     }
+ }
+ 
++// A transport owns its receiver. Sharing one by peer ID would hold the
++// second transport behind the first transport's lifetime-long receiver lock.
++pub fn new_rx_cliprdr_client(
++    peer_id: &str,
++) -> (i32, Arc<TokioMutex<UnboundedReceiver<ClipboardFile>>>) {
++    let (sender, receiver) = unbounded_channel();
++    let receiver = Arc::new(TokioMutex::new(receiver));
++    let conn_id = get_conn_id();
++    VEC_MSG_CHANNEL.write().unwrap().push(MsgChannel {
++        peer_id: peer_id.to_owned(),
++        conn_id,
++        sender,
++        receiver: receiver.clone(),
++    });
++    (conn_id, receiver)
++}
++
+ pub fn get_rx_cliprdr_server(conn_id: i32) -> Arc<TokioMutex<UnboundedReceiver<ClipboardFile>>> {
+     let mut lock = VEC_MSG_CHANNEL.write().unwrap();
+     match lock.iter().find(|x| x.conn_id == conn_id) {
 diff --git a/src/client.rs b/src/client.rs
-index dcd5941..1ced9df 100644
+index dcd5941..80df63e 100644
 --- a/src/client.rs
 +++ b/src/client.rs
-@@ -1734,6 +1734,7 @@ struct ConnToken {
+@@ -1734,6 +1734,8 @@ struct ConnToken {
  pub struct LoginConfigHandler {
      id: String,
      pub conn_type: ConnType,
 +    pub consent_only: bool,
++    pub clipboard_conn_id: i32,
      pub is_terminal_admin: bool,
      hash: Hash,
      password: Vec<u8>, // remember password for reconnect
-@@ -1835,7 +1836,7 @@ impl LoginConfigHandler {
+@@ -1835,7 +1837,7 @@ impl LoginConfigHandler {
          self.id = id;
          self.conn_type = conn_type;
          let config = self.load_config();
@@ -392,7 +421,7 @@ index dcd5941..1ced9df 100644
          self.config = config;
  
          let conn_token = conn_token
-@@ -1909,6 +1910,9 @@ impl LoginConfigHandler {
+@@ -1909,6 +1911,9 @@ impl LoginConfigHandler {
      /// Check if the client should auto login.
      /// Return password if the client should auto login, otherwise return empty string.
      pub fn should_auto_login(&self) -> String {
@@ -402,7 +431,7 @@ index dcd5941..1ced9df 100644
          let l = self.lock_after_session_end.v;
          let a = !self.get_option("auto-login").is_empty();
          let p = self.get_option("os-password");
-@@ -2551,24 +2555,26 @@ impl LoginConfigHandler {
+@@ -2551,24 +2556,26 @@ impl LoginConfigHandler {
          let password0 = config.password.clone();
          let remember = self.remember;
          let hash = self.hash.clone();
@@ -447,7 +476,7 @@ index dcd5941..1ced9df 100644
              }
          }
          if let Some((_, b, c)) = self.other_server.as_ref() {
-@@ -2586,7 +2592,8 @@ impl LoginConfigHandler {
+@@ -2586,7 +2593,8 @@ impl LoginConfigHandler {
          #[cfg(feature = "flutter")]
          {
              // sync connected password to personal ab automatically if it is not shared password
@@ -457,7 +486,7 @@ index dcd5941..1ced9df 100644
                  && !self.password_source.is_shared_ab(&password, &hash)
                  && !self.password_source.is_personal_ab(&password)
              {
-@@ -3393,6 +3400,23 @@ pub fn handle_login_error(
+@@ -3393,6 +3401,23 @@ pub fn handle_login_error(
      err: &str,
      interface: &impl Interface,
  ) -> bool {
@@ -481,7 +510,7 @@ index dcd5941..1ced9df 100644
      if err == LOGIN_MSG_PASSWORD_EMPTY {
          lc.write().unwrap().password = Default::default();
          interface.msgbox("input-password", "Password Required", "", "");
-@@ -3480,6 +3504,17 @@ pub async fn handle_hash(
+@@ -3480,6 +3505,17 @@ pub async fn handle_hash(
      peer: &mut Stream,
  ) {
      lc.write().unwrap().hash = hash.clone();
@@ -499,7 +528,7 @@ index dcd5941..1ced9df 100644
      // Take care of password application order
  
      // switch_uuid
-@@ -3656,6 +3691,9 @@ pub async fn handle_login_from_ui(
+@@ -3656,6 +3692,9 @@ pub async fn handle_login_from_ui(
      remember: bool,
      peer: &mut Stream,
  ) {
@@ -509,6 +538,40 @@ index dcd5941..1ced9df 100644
      let mut hash_password = if password.is_empty() {
          let mut password2 = lc.read().unwrap().password.clone();
          if password2.is_empty() {
+diff --git a/src/client/io_loop.rs b/src/client/io_loop.rs
+index c0eb7fb..5d2a982 100644
+--- a/src/client/io_loop.rs
++++ b/src/client/io_loop.rs
+@@ -216,13 +216,19 @@ impl<T: InvokeUiSession> Remote<T> {
+                 {
+                     if self.handler.is_default() {
+                         (self.client_conn_id, rx_clip_client_holder.0) =
+-                            clipboard::get_rx_cliprdr_client(&self.handler.get_id());
++                            clipboard::new_rx_cliprdr_client(&self.handler.get_id());
+                         log::debug!("get cliprdr client for conn_id {}", self.client_conn_id);
+                         let client_conn_id = self.client_conn_id;
++                        self.handler.lc.write().unwrap().clipboard_conn_id = client_conn_id;
++                        let login = self.handler.lc.clone();
+                         rx_clip_client_holder.1 = Some(crate::SimpleCallOnReturn {
+                             b: true,
+                             f: Box::new(move || {
+                                 clipboard::remove_channel_by_conn_id(client_conn_id);
++                                let mut login = login.write().unwrap();
++                                if login.clipboard_conn_id == client_conn_id {
++                                    login.clipboard_conn_id = 0;
++                                }
+                             }),
+                         });
+                     };
+@@ -2352,7 +2358,7 @@ impl<T: InvokeUiSession> Remote<T> {
+         #[cfg(feature = "flutter")]
+         if let Some(hbb_common::message_proto::cliprdr::Union::FormatList(_)) = &clip.union {
+             if self.client_conn_id
+-                != clipboard::get_client_conn_id(&crate::flutter::get_cur_peer_id()).unwrap_or(0)
++                != crate::flutter::get_cur_clipboard_conn_id()
+             {
+                 return;
+             }
 diff --git a/src/core_main.rs b/src/core_main.rs
 index 6b437a9..4f599b9 100644
 --- a/src/core_main.rs
@@ -524,7 +587,7 @@ index 6b437a9..4f599b9 100644
                  param_array.push(format!("relay=true"));
              }
 diff --git a/src/flutter.rs b/src/flutter.rs
-index e6b325c..14430f1 100644
+index e6b325c..226bbf2 100644
 --- a/src/flutter.rs
 +++ b/src/flutter.rs
 @@ -1274,13 +1274,21 @@ pub fn session_add_existed(
@@ -594,7 +657,20 @@ index e6b325c..14430f1 100644
  
      let session = Arc::new(session.clone());
      sessions::insert_session(session_id.to_owned(), conn_type, session.clone());
-@@ -2046,7 +2068,7 @@ pub mod sessions {
+@@ -1670,6 +1692,12 @@ pub fn get_cur_peer_id() -> String {
+         .unwrap_or("".to_string())
+ }
+ 
++pub fn get_cur_clipboard_conn_id() -> i32 {
++    sessions::get_session_by_session_id(&get_cur_session_id())
++        .map(|session| session.lc.read().unwrap().clipboard_conn_id)
++        .unwrap_or(0)
++}
++
+ pub fn set_cur_session_id(session_id: SessionID) {
+     if get_cur_session_id() != session_id {
+         *CUR_SESSION_ID.write().unwrap() = session_id;
+@@ -2046,7 +2074,7 @@ pub mod sessions {
  
      lazy_static::lazy_static! {
          // peer -> peer session, peer session -> ui sessions
@@ -603,7 +679,7 @@ index e6b325c..14430f1 100644
      }
  
      #[inline]
-@@ -2054,9 +2076,10 @@ pub mod sessions {
+@@ -2054,9 +2082,10 @@ pub mod sessions {
          SESSIONS
              .read()
              .unwrap()
@@ -617,7 +693,7 @@ index e6b325c..14430f1 100644
      }
  
      #[inline]
-@@ -2065,7 +2088,7 @@ pub mod sessions {
+@@ -2065,7 +2094,7 @@ pub mod sessions {
              .read()
              .unwrap()
              .iter()
@@ -626,7 +702,7 @@ index e6b325c..14430f1 100644
                  if *t == conn_type
                      && s.ui_handler
                          .session_handlers
-@@ -2098,7 +2121,7 @@ pub mod sessions {
+@@ -2098,7 +2127,7 @@ pub mod sessions {
  
      #[inline]
      pub fn get_session_by_peer_id(peer_id: String, conn_type: ConnType) -> Option<FlutterSession> {
@@ -635,7 +711,7 @@ index e6b325c..14430f1 100644
      }
  
      #[inline]
-@@ -2234,10 +2257,17 @@ pub mod sessions {
+@@ -2234,10 +2263,17 @@ pub mod sessions {
  
      #[inline]
      pub fn insert_session(session_id: SessionID, conn_type: ConnType, session: FlutterSession) {
@@ -654,7 +730,7 @@ index e6b325c..14430f1 100644
              .or_insert(session)
              .ui_handler
              .session_handlers
-@@ -2260,8 +2290,17 @@ pub mod sessions {
+@@ -2260,8 +2296,17 @@ pub mod sessions {
          conn_type: ConnType,
          session_id: SessionID,
          displays: Vec<i32>,
@@ -673,7 +749,7 @@ index e6b325c..14430f1 100644
              let mut h = SessionHandler::default();
              h.displays = displays.iter().map(|x| *x as usize).collect::<_>();
              #[cfg(not(any(target_os = "android", target_os = "ios")))]
-@@ -2296,7 +2335,7 @@ pub mod sessions {
+@@ -2296,7 +2341,7 @@ pub mod sessions {
      #[inline]
      #[cfg(not(target_os = "ios"))]
      pub fn has_sessions_running(conn_type: ConnType) -> bool {
@@ -682,7 +758,7 @@ index e6b325c..14430f1 100644
              *r#type == conn_type && s.session_handlers.read().unwrap().len() != 0
          })
      }
-@@ -2304,12 +2343,94 @@ pub mod sessions {
+@@ -2304,12 +2349,134 @@ pub mod sessions {
      #[inline]
      #[cfg(not(target_os = "ios"))]
      pub fn has_connected_sessions_running(conn_type: ConnType) -> bool {
@@ -713,6 +789,46 @@ index e6b325c..14430f1 100644
 +                );
 +            }
 +            Arc::new(session)
++        }
++
++        #[cfg(any(target_os = "windows", feature = "unix-file-copy-paste"))]
++        #[test]
++        fn brs_consent_registry_clipboard_receivers_are_per_transport() {
++            let peer = "brs-clipboard-regression-peer";
++            let kind = ConnType::DEFAULT_CONN;
++            let trusted_id = SessionID::from_u128(0x42525311);
++            let normal_id = SessionID::from_u128(0x42525312);
++            let previous_current = super::super::get_cur_session_id();
++            let trusted = connection(peer, false);
++            let normal = connection(peer, true);
++            insert_session(trusted_id, kind, trusted.clone());
++            insert_session(normal_id, kind, normal.clone());
++
++            let (trusted_clip, trusted_rx) = clipboard::new_rx_cliprdr_client(peer);
++            let (normal_clip, normal_rx) = clipboard::new_rx_cliprdr_client(peer);
++            assert_ne!(trusted_clip, normal_clip);
++            assert!(!Arc::ptr_eq(&trusted_rx, &normal_rx));
++            let mut trusted_guard = trusted_rx.try_lock().expect("trusted receiver");
++            let mut normal_guard = normal_rx.try_lock().expect("independent normal receiver");
++            trusted.lc.write().unwrap().clipboard_conn_id = trusted_clip;
++            normal.lc.write().unwrap().clipboard_conn_id = normal_clip;
++            super::super::set_cur_session_id(trusted_id);
++            assert_eq!(super::super::get_cur_clipboard_conn_id(), trusted_clip);
++            super::super::set_cur_session_id(normal_id);
++            assert_eq!(super::super::get_cur_clipboard_conn_id(), normal_clip);
++
++            clipboard::send_data(trusted_clip, clipboard::ClipboardFile::TryEmpty).unwrap();
++            assert!(matches!(trusted_guard.try_recv(), Ok(clipboard::ClipboardFile::TryEmpty)));
++            assert!(normal_guard.try_recv().is_err());
++            clipboard::remove_channel_by_conn_id(trusted_clip);
++            assert!(clipboard::send_data(trusted_clip, clipboard::ClipboardFile::TryEmpty).is_err());
++            clipboard::send_data(normal_clip, clipboard::ClipboardFile::TryEmpty).unwrap();
++            assert!(matches!(normal_guard.try_recv(), Ok(clipboard::ClipboardFile::TryEmpty)));
++            clipboard::remove_channel_by_conn_id(normal_clip);
++            remove_session_by_session_id(&trusted_id);
++            remove_session_by_session_id(&normal_id);
++            assert_eq!(super::super::get_cur_clipboard_conn_id(), 0);
++            super::super::set_cur_session_id(previous_current);
 +        }
 +
 +        #[test]
