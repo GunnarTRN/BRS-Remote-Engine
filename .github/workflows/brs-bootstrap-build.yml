@@ -6,6 +6,7 @@ on:
     branches: [brs-branding-1.4.9, codex/brs-consent-3.2.16]
     paths:
       - '.github/workflows/brs-bootstrap-build.yml'
+      - '.github/patches/brs-consent-only.patch'
 
 permissions:
   contents: read
@@ -343,6 +344,14 @@ jobs:
 
           "BRS Remote Engine`nBase: RustDesk OSS 1.4.9`nPackaging: upstream self-extracted portable bundle with complete Flutter runtime`nBootstrap commit: $env:GITHUB_SHA`nBuilt on windows-2022`nSHA256: $hash" | Set-Content .\brs-artifact\BUILD_INFO.txt -Encoding UTF8
           "BRS Remote Engine is a derivative build based on RustDesk OSS 1.4.9 and remains subject to GNU AGPL v3.0. Corresponding source is this fork plus the verified BRS patch stack." | Set-Content .\brs-artifact\THIRD_PARTY_NOTICES.txt -Encoding UTF8
+
+      - name: Verify consent transport isolation and monitor ownership
+        shell: pwsh
+        env:
+          VCPKG_ROOT: C:\vcpkg
+        run: |
+          cargo test --release --lib --features flutter,hwcodec,vram brs_consent_registry -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { throw 'Consent transport regression failed' }
 
       - name: Verify real silent installation on isolated Windows runner
         shell: pwsh
