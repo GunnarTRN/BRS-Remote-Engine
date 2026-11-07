@@ -107,7 +107,7 @@ index f466964..a8019ef 100644
        displays: widget.displays,
      );
 diff --git a/flutter/lib/desktop/pages/remote_tab_page.dart b/flutter/lib/desktop/pages/remote_tab_page.dart
-index ccd5935..0c50d99 100644
+index ccd5935..9e1fa61 100644
 --- a/flutter/lib/desktop/pages/remote_tab_page.dart
 +++ b/flutter/lib/desktop/pages/remote_tab_page.dart
 @@ -94,12 +94,14 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
@@ -140,7 +140,21 @@ index ccd5935..0c50d99 100644
            forceRelay: args['forceRelay'],
            isSharedPassword: args['isSharedPassword'],
          ),
-@@ -493,6 +497,15 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
+@@ -484,6 +488,13 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
+     } else if (call.method == kWindowActionRebuild) {
+       reloadCurrentWindow();
+     } else if (call.method == kWindowEventActiveSession) {
++      // Consent-only requests always open a new transport. An authenticated
++      // launch must likewise never focus a consent-only view for this peer.
++      final page = tabController.widget(call.arguments);
++      if (page is RemotePage &&
++          bind.sessionIsConsentOnlySync(sessionId: page.ffi.sessionId)) {
++        return false;
++      }
+       final jumpOk = tabController.jumpToByKey(call.arguments);
+       if (jumpOk) {
+         windowOnTop(windowId());
+@@ -493,6 +504,15 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
        final args = jsonDecode(call.arguments);
        final id = args['id'];
        final display = args['display'];
@@ -296,10 +310,10 @@ index 9e26f8c..9b7fbe2 100644
    }
  
 diff --git a/flutter/lib/web/bridge.dart b/flutter/lib/web/bridge.dart
-index ac48dfb..6b92b63 100644
+index ac48dfb..52a4e9c 100644
 --- a/flutter/lib/web/bridge.dart
 +++ b/flutter/lib/web/bridge.dart
-@@ -68,12 +68,20 @@ class RustdeskImpl {
+@@ -68,12 +68,25 @@ class RustdeskImpl {
    String sessionAddExistedSync(
        {required String id,
        required UuidValue sessionId,
@@ -310,6 +324,11 @@ index ac48dfb..6b92b63 100644
      return '';
    }
  
++  bool sessionIsConsentOnlySync(
++      {required UuidValue sessionId, dynamic hint}) {
++    return false;
++  }
++
 +  bool sessionSameConnectionSync(
 +      {required UuidValue sourceSessionId,
 +      required UuidValue targetSessionId,
@@ -320,7 +339,7 @@ index ac48dfb..6b92b63 100644
    String sessionAddSync(
        {required UuidValue sessionId,
        required String id,
-@@ -83,6 +91,7 @@ class RustdeskImpl {
+@@ -83,6 +96,7 @@ class RustdeskImpl {
        required bool isRdp,
        required bool isTerminal,
        required String switchUuid,
@@ -736,10 +755,10 @@ index e6b325c..14430f1 100644
  
  pub(super) mod async_tasks {
 diff --git a/src/flutter_ffi.rs b/src/flutter_ffi.rs
-index 0777443..207186d 100644
+index 0777443..d08fd11 100644
 --- a/src/flutter_ffi.rs
 +++ b/src/flutter_ffi.rs
-@@ -126,14 +126,28 @@ pub fn session_add_existed_sync(
+@@ -126,14 +126,36 @@ pub fn session_add_existed_sync(
      session_id: SessionID,
      displays: Vec<i32>,
      is_view_camera: bool,
@@ -753,6 +772,14 @@ index 0777443..207186d 100644
      }
  }
  
++pub fn session_is_consent_only_sync(session_id: SessionID) -> SyncReturn<bool> {
++    SyncReturn(
++        sessions::get_session_by_session_id(&session_id)
++            .map(|s| s.lc.read().unwrap().consent_only)
++            .unwrap_or(true),
++    )
++}
++
 +pub fn session_same_connection_sync(
 +    source_session_id: SessionID,
 +    target_session_id: SessionID,
@@ -769,7 +796,7 @@ index 0777443..207186d 100644
  pub fn session_add_sync(
      session_id: SessionID,
      id: String,
-@@ -143,6 +157,7 @@ pub fn session_add_sync(
+@@ -143,6 +165,7 @@ pub fn session_add_sync(
      is_rdp: bool,
      is_terminal: bool,
      switch_uuid: String,
@@ -777,7 +804,7 @@ index 0777443..207186d 100644
      force_relay: bool,
      password: String,
      is_shared_password: bool,
-@@ -157,6 +172,7 @@ pub fn session_add_sync(
+@@ -157,6 +180,7 @@ pub fn session_add_sync(
          is_rdp,
          is_terminal,
          &switch_uuid,
