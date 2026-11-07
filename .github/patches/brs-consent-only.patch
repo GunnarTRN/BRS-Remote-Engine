@@ -1,5 +1,5 @@
 diff --git a/flutter/lib/common.dart b/flutter/lib/common.dart
-index 1651f67..ad00752 100644
+index 1651f67..6a7dbad 100644
 --- a/flutter/lib/common.dart
 +++ b/flutter/lib/common.dart
 @@ -2294,6 +2294,7 @@ bool handleUriLink({List<String>? cmdArgs, Uri? uri, String? uriString}) {
@@ -38,11 +38,42 @@ index 1651f67..ad00752 100644
      return args;
    }
  
+@@ -3425,8 +3431,9 @@ openMonitorInTheSameTab(int i, FFI ffi, PeerInfo pi,
+ //
+ // screenRect is used to move the new window to the specified screen and set fullscreen.
+ openMonitorInNewTabOrWindow(int i, String peerId, PeerInfo pi,
+-    {Rect? screenRect}) {
++    {required String sourceSessionId, Rect? screenRect}) {
+   final args = {
++    'source_session_id': sourceSessionId,
+     'window_id': stateGlobal.windowId,
+     'peer_id': peerId,
+     'display': i,
+diff --git a/flutter/lib/desktop/pages/desktop_home_page.dart b/flutter/lib/desktop/pages/desktop_home_page.dart
+index 42ec100..9fbef33 100644
+--- a/flutter/lib/desktop/pages/desktop_home_page.dart
++++ b/flutter/lib/desktop/pages/desktop_home_page.dart
+@@ -841,7 +841,8 @@ class _DesktopHomePageState extends State<DesktopHomePage>
+         final windowType = args['window_type'] as int;
+         final screenRect = parseParamScreenRect(args);
+         await rustDeskWinManager.openMonitorSession(
+-            windowId, peerId, display, displayCount, screenRect, windowType);
++            windowId, peerId, display, displayCount, screenRect, windowType,
++            sourceSessionId: args['source_session_id'] ?? '');
+       } else if (call.method == kWindowEventRemoteWindowCoords) {
+         final windowId = int.tryParse(call.arguments);
+         if (windowId != null) {
 diff --git a/flutter/lib/desktop/pages/remote_page.dart b/flutter/lib/desktop/pages/remote_page.dart
-index f466964..c93c65b 100644
+index f466964..a8019ef 100644
 --- a/flutter/lib/desktop/pages/remote_page.dart
 +++ b/flutter/lib/desktop/pages/remote_page.dart
-@@ -43,6 +43,7 @@ class RemotePage extends StatefulWidget {
+@@ -38,11 +38,13 @@ class RemotePage extends StatefulWidget {
+     required this.toolbarState,
+     this.sessionId,
+     this.tabWindowId,
++    this.sourceSessionId = '',
+     this.password,
+     this.display,
      this.displays,
      this.tabController,
      this.switchUuid,
@@ -50,7 +81,13 @@ index f466964..c93c65b 100644
      this.forceRelay,
      this.isSharedPassword,
    }) : super(key: key) {
-@@ -57,6 +58,7 @@ class RemotePage extends StatefulWidget {
+@@ -52,11 +54,13 @@ class RemotePage extends StatefulWidget {
+   final String id;
+   final SessionID? sessionId;
+   final int? tabWindowId;
++  final String sourceSessionId;
+   final int? display;
+   final List<int>? displays;
    final String? password;
    final ToolbarState toolbarState;
    final String? switchUuid;
@@ -58,19 +95,29 @@ index f466964..c93c65b 100644
    final bool? forceRelay;
    final bool? isSharedPassword;
    final SimpleWrapper<State<RemotePage>?> _lastState = SimpleWrapper(null);
-@@ -136,6 +138,7 @@ class _RemotePageState extends State<RemotePage>
+@@ -136,8 +140,10 @@ class _RemotePageState extends State<RemotePage>
        password: widget.password,
        isSharedPassword: widget.isSharedPassword,
        switchUuid: widget.switchUuid,
 +      consentOnly: widget.consentOnly,
        forceRelay: widget.forceRelay,
        tabWindowId: widget.tabWindowId,
++      sourceSessionId: widget.sourceSessionId,
        display: widget.display,
+       displays: widget.displays,
+     );
 diff --git a/flutter/lib/desktop/pages/remote_tab_page.dart b/flutter/lib/desktop/pages/remote_tab_page.dart
-index ccd5935..32e2dc9 100644
+index ccd5935..0c50d99 100644
 --- a/flutter/lib/desktop/pages/remote_tab_page.dart
 +++ b/flutter/lib/desktop/pages/remote_tab_page.dart
-@@ -100,6 +100,7 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
+@@ -94,12 +94,14 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
+           id: peerId!,
+           sessionId: sessionId == null ? null : SessionID(sessionId),
+           tabWindowId: tabWindowId,
++          sourceSessionId: params['source_session_id'] ?? '',
+           display: display,
+           displays: displays?.cast<int>(),
+           password: params['password'],
            toolbarState: ToolbarState(),
            tabController: tabController,
            switchUuid: params['switch_uuid'],
@@ -78,7 +125,14 @@ index ccd5935..32e2dc9 100644
            forceRelay: params['forceRelay'],
            isSharedPassword: params['isSharedPassword'],
          ),
-@@ -473,6 +474,7 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
+@@ -467,12 +469,14 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
+           id: id,
+           sessionId: sessionId == null ? null : SessionID(sessionId),
+           tabWindowId: tabWindowId,
++          sourceSessionId: args['source_session_id'] ?? '',
+           display: display,
+           displays: displays?.cast<int>(),
+           password: args['password'],
            toolbarState: ToolbarState(),
            tabController: tabController,
            switchUuid: switchUuid,
@@ -86,10 +140,57 @@ index ccd5935..32e2dc9 100644
            forceRelay: args['forceRelay'],
            isSharedPassword: args['isSharedPassword'],
          ),
+@@ -493,6 +497,15 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
+       final args = jsonDecode(call.arguments);
+       final id = args['id'];
+       final display = args['display'];
++      final sourceId = args['source_session_id'];
++      if (sourceId is String && sourceId.isNotEmpty) {
++        final page = tabController.widget(id);
++        if (page is! RemotePage || !bind.sessionSameConnectionSync(
++            sourceSessionId: SessionID(sourceId),
++            targetSessionId: page.ffi.sessionId)) {
++          return false;
++        }
++      }
+       final jumpOk = tabController.jumpToByKeyAndDisplay(id, display);
+       if (jumpOk) {
+         windowOnTop(windowId());
+diff --git a/flutter/lib/desktop/widgets/remote_toolbar.dart b/flutter/lib/desktop/widgets/remote_toolbar.dart
+index 75fdbe1..4cc2d1e 100644
+--- a/flutter/lib/desktop/widgets/remote_toolbar.dart
++++ b/flutter/lib/desktop/widgets/remote_toolbar.dart
+@@ -999,7 +999,7 @@ class _MonitorCycle {
+         bind.sessionGetDisplaysAsIndividualWindows(sessionId: ffi.sessionId) ==
+             'Y';
+     if (isChooseDisplayToOpenInNewWindow) {
+-      openMonitorInNewTabOrWindow(target, ffi.id, _pi);
++      openMonitorInNewTabOrWindow(target, ffi.id, _pi, sourceSessionId: ffi.sessionId.toString());
+     } else {
+       openMonitorInTheSameTab(target, ffi, _pi, updateCursorPos: false);
+     }
+@@ -1293,7 +1293,7 @@ class _MonitorMenu extends StatelessWidget {
+                   sessionId: ffi.sessionId) ==
+               'Y';
+       if (isChooseDisplayToOpenInNewWindow) {
+-        openMonitorInNewTabOrWindow(i, ffi.id, pi);
++        openMonitorInNewTabOrWindow(i, ffi.id, pi, sourceSessionId: ffi.sessionId.toString());
+       } else {
+         openMonitorInTheSameTab(i, ffi, pi, updateCursorPos: !isMulti);
+       }
 diff --git a/flutter/lib/models/model.dart b/flutter/lib/models/model.dart
-index 175e3ff..6e7dd19 100644
+index 175e3ff..be30e1e 100644
 --- a/flutter/lib/models/model.dart
 +++ b/flutter/lib/models/model.dart
+@@ -1560,7 +1560,7 @@ class FfiModel with ChangeNotifier {
+         : screenRectList.length;
+     for (var i = 1; i < length; i++) {
+       openMonitorInNewTabOrWindow(i, peerId, _pi,
+-          screenRect: screenRectList[i]);
++          sourceSessionId: sessionId.toString(), screenRect: screenRectList[i]);
+     }
+   }
+ 
 @@ -3751,6 +3751,7 @@ class FFI {
      bool isRdp = false,
      bool isTerminal = false,
@@ -98,7 +199,15 @@ index 175e3ff..6e7dd19 100644
      String? password,
      bool? isSharedPassword,
      String? connToken,
-@@ -3799,6 +3800,7 @@ class FFI {
+@@ -3758,6 +3759,7 @@ class FFI {
+     int? tabWindowId,
+     int? display,
+     List<int>? displays,
++    String sourceSessionId = '',
+   }) {
+     closed = false;
+     if (isMobile) mobileReset();
+@@ -3799,6 +3801,7 @@ class FFI {
          isRdp: isRdp,
          isTerminal: isTerminal,
          switchUuid: switchUuid ?? '',
@@ -106,11 +215,44 @@ index 175e3ff..6e7dd19 100644
          forceRelay: forceRelay ?? false,
          password: password ?? '',
          isSharedPassword: isSharedPassword ?? false,
+@@ -3813,6 +3816,7 @@ class FFI {
+       final addRes = bind.sessionAddExistedSync(
+           id: id,
+           sessionId: sessionId,
++          sourceSessionId: sourceSessionId,
+           displays: Int32List.fromList(displays),
+           isViewCamera: isViewCamera);
+       if (addRes != '') {
 diff --git a/flutter/lib/utils/multi_window_manager.dart b/flutter/lib/utils/multi_window_manager.dart
-index 9e26f8c..aac28cb 100644
+index 9e26f8c..9b7fbe2 100644
 --- a/flutter/lib/utils/multi_window_manager.dart
 +++ b/flutter/lib/utils/multi_window_manager.dart
-@@ -230,6 +230,7 @@ class RustDeskMultiWindowManager {
+@@ -98,7 +98,7 @@ class RustDeskMultiWindowManager {
+   // This function must be called in the main window thread.
+   // Because the _remoteDesktopWindows is managed in that thread.
+   openMonitorSession(int windowId, String peerId, int display, int displayCount,
+-      Rect? screenRect, int windowType) async {
++      Rect? screenRect, int windowType, {String sourceSessionId = ''}) async {
+     final isCamera = windowType == WindowType.ViewCamera.index;
+     final windowIDs = isCamera ? _viewCameraWindows : _remoteDesktopWindows;
+     if (windowIDs.length > 1) {
+@@ -109,6 +109,7 @@ class RustDeskMultiWindowManager {
+             jsonEncode({
+               'id': peerId,
+               'display': display,
++              'source_session_id': sourceSessionId,
+             }))) {
+           return;
+         }
+@@ -122,6 +123,7 @@ class RustDeskMultiWindowManager {
+       'type': windowType,
+       'id': peerId,
+       'tab_window_id': windowId,
++      'source_session_id': sourceSessionId,
+       'display': display,
+       'displays': displays,
+     };
+@@ -230,6 +232,7 @@ class RustDeskMultiWindowManager {
      bool? isRDP,
      bool? isSharedPassword,
      String? connToken,
@@ -118,7 +260,7 @@ index 9e26f8c..aac28cb 100644
    }) async {
      var params = {
        "type": type.index,
-@@ -249,8 +250,18 @@ class RustDeskMultiWindowManager {
+@@ -249,8 +252,18 @@ class RustDeskMultiWindowManager {
      if (connToken != null) {
        params['connToken'] = connToken;
      }
@@ -137,7 +279,7 @@ index 9e26f8c..aac28cb 100644
      // separate window for file transfer is not supported
      bool openInTabs = type != WindowType.RemoteDesktop ||
          mainGetLocalBoolOptionSync(kOptionOpenNewConnInTabs);
-@@ -273,6 +284,7 @@ class RustDeskMultiWindowManager {
+@@ -273,6 +286,7 @@ class RustDeskMultiWindowManager {
      bool? isSharedPassword,
      String? switchUuid,
      bool? forceRelay,
@@ -145,7 +287,7 @@ index 9e26f8c..aac28cb 100644
    }) async {
      return await newSession(
        WindowType.RemoteDesktop,
-@@ -283,6 +295,7 @@ class RustDeskMultiWindowManager {
+@@ -283,6 +297,7 @@ class RustDeskMultiWindowManager {
        forceRelay: forceRelay,
        switchUuid: switchUuid,
        isSharedPassword: isSharedPassword,
@@ -154,10 +296,31 @@ index 9e26f8c..aac28cb 100644
    }
  
 diff --git a/flutter/lib/web/bridge.dart b/flutter/lib/web/bridge.dart
-index ac48dfb..8c725d8 100644
+index ac48dfb..6b92b63 100644
 --- a/flutter/lib/web/bridge.dart
 +++ b/flutter/lib/web/bridge.dart
-@@ -83,6 +83,7 @@ class RustdeskImpl {
+@@ -68,12 +68,20 @@ class RustdeskImpl {
+   String sessionAddExistedSync(
+       {required String id,
+       required UuidValue sessionId,
++      required String sourceSessionId,
+       required Int32List displays,
+       required bool isViewCamera,
+       dynamic hint}) {
+     return '';
+   }
+ 
++  bool sessionSameConnectionSync(
++      {required UuidValue sourceSessionId,
++      required UuidValue targetSessionId,
++      dynamic hint}) {
++    return sourceSessionId == targetSessionId;
++  }
++
+   String sessionAddSync(
+       {required UuidValue sessionId,
+       required String id,
+@@ -83,6 +91,7 @@ class RustdeskImpl {
        required bool isRdp,
        required bool isTerminal,
        required String switchUuid,
@@ -318,10 +481,33 @@ index 6b437a9..4f599b9 100644
                  param_array.push(format!("relay=true"));
              }
 diff --git a/src/flutter.rs b/src/flutter.rs
-index e6b325c..0b54cdc 100644
+index e6b325c..14430f1 100644
 --- a/src/flutter.rs
 +++ b/src/flutter.rs
-@@ -1301,6 +1301,7 @@ pub fn session_add(
+@@ -1274,13 +1274,21 @@ pub fn session_add_existed(
+     session_id: SessionID,
+     displays: Vec<i32>,
+     is_view_camera: bool,
++    source_session_id: String,
+ ) -> ResultType<()> {
+     let conn_type = if is_view_camera {
+         ConnType::VIEW_CAMERA
+     } else {
+         ConnType::DEFAULT_CONN
+     };
+-    sessions::insert_peer_session_id(peer_id, conn_type, session_id, displays);
++    let source = if source_session_id.is_empty() {
++        None
++    } else {
++        Some(SessionID::parse_str(&source_session_id)?)
++    };
++    if !sessions::insert_peer_session_id(peer_id, conn_type, session_id, displays, source) {
++        bail!("Source connection is no longer available");
++    }
+     Ok(())
+ }
+ 
+@@ -1301,6 +1309,7 @@ pub fn session_add(
      is_rdp: bool,
      is_terminal: bool,
      switch_uuid: &str,
@@ -329,7 +515,7 @@ index e6b325c..0b54cdc 100644
      force_relay: bool,
      password: String,
      is_shared_password: bool,
-@@ -1322,6 +1323,16 @@ pub fn session_add(
+@@ -1322,6 +1331,16 @@ pub fn session_add(
          ConnType::DEFAULT_CONN
      };
  
@@ -346,7 +532,7 @@ index e6b325c..0b54cdc 100644
      // to-do: check the same id session.
      if let Some(session) = sessions::get_session_by_session_id(&session_id) {
          if session.lc.read().unwrap().conn_type != conn_type {
-@@ -1357,7 +1368,9 @@ pub fn session_add(
+@@ -1357,7 +1376,9 @@ pub fn session_add(
          Some(switch_uuid.to_string())
      };
  
@@ -357,7 +543,7 @@ index e6b325c..0b54cdc 100644
          id.to_owned(),
          conn_type,
          switch_uuid,
-@@ -1366,6 +1379,7 @@ pub fn session_add(
+@@ -1366,6 +1387,7 @@ pub fn session_add(
          shared_password,
          conn_token,
      );
@@ -365,11 +551,225 @@ index e6b325c..0b54cdc 100644
  
      let session = Arc::new(session.clone());
      sessions::insert_session(session_id.to_owned(), conn_type, session.clone());
+@@ -2046,7 +2068,7 @@ pub mod sessions {
+ 
+     lazy_static::lazy_static! {
+         // peer -> peer session, peer session -> ui sessions
+-        static ref SESSIONS: RwLock<HashMap<(String, ConnType), FlutterSession>> = Default::default();
++        static ref SESSIONS: RwLock<HashMap<(String, ConnType, Option<SessionID>), FlutterSession>> = Default::default();
+     }
+ 
+     #[inline]
+@@ -2054,9 +2076,10 @@ pub mod sessions {
+         SESSIONS
+             .read()
+             .unwrap()
+-            .get(&(peer_id, conn_type))
+-            .map(|s| s.ui_handler.session_handlers.read().unwrap().len())
+-            .unwrap_or(0)
++            .iter()
++            .filter(|((id, kind, _), _)| *id == peer_id && *kind == conn_type)
++            .map(|(_, s)| s.ui_handler.session_handlers.read().unwrap().len())
++            .sum()
+     }
+ 
+     #[inline]
+@@ -2065,7 +2088,7 @@ pub mod sessions {
+             .read()
+             .unwrap()
+             .iter()
+-            .find_map(|((peer_id, t), s)| {
++            .find_map(|((peer_id, t, _), s)| {
+                 if *t == conn_type
+                     && s.ui_handler
+                         .session_handlers
+@@ -2098,7 +2121,7 @@ pub mod sessions {
+ 
+     #[inline]
+     pub fn get_session_by_peer_id(peer_id: String, conn_type: ConnType) -> Option<FlutterSession> {
+-        SESSIONS.read().unwrap().get(&(peer_id, conn_type)).cloned()
++        SESSIONS.read().unwrap().get(&(peer_id, conn_type, None)).cloned()
+     }
+ 
+     #[inline]
+@@ -2234,10 +2257,17 @@ pub mod sessions {
+ 
+     #[inline]
+     pub fn insert_session(session_id: SessionID, conn_type: ConnType, session: FlutterSession) {
++        // Each consent request owns a transport, even if this peer already
++        // has an authenticated or another consent-only connection.
++        let request = if session.lc.read().unwrap().consent_only {
++            Some(session_id)
++        } else {
++            None
++        };
+         SESSIONS
+             .write()
+             .unwrap()
+-            .entry((session.get_id(), conn_type))
++            .entry((session.get_id(), conn_type, request))
+             .or_insert(session)
+             .ui_handler
+             .session_handlers
+@@ -2260,8 +2290,17 @@ pub mod sessions {
+         conn_type: ConnType,
+         session_id: SessionID,
+         displays: Vec<i32>,
++        source_session_id: Option<SessionID>,
+     ) -> bool {
+-        if let Some(s) = SESSIONS.read().unwrap().get(&(peer_id, conn_type)) {
++        // Additional monitors must join their originating transport, not
++        // another connection to the same peer with different consent.
++        let source = match source_session_id {
++            Some(id) => get_session_by_session_id(&id).filter(|s| {
++                s.get_id() == peer_id && s.lc.read().unwrap().conn_type == conn_type
++            }),
++            None => get_session_by_peer_id(peer_id, conn_type),
++        };
++        if let Some(s) = source {
+             let mut h = SessionHandler::default();
+             h.displays = displays.iter().map(|x| *x as usize).collect::<_>();
+             #[cfg(not(any(target_os = "android", target_os = "ios")))]
+@@ -2296,7 +2335,7 @@ pub mod sessions {
+     #[inline]
+     #[cfg(not(target_os = "ios"))]
+     pub fn has_sessions_running(conn_type: ConnType) -> bool {
+-        SESSIONS.read().unwrap().iter().any(|((_, r#type), s)| {
++        SESSIONS.read().unwrap().iter().any(|((_, r#type, _), s)| {
+             *r#type == conn_type && s.session_handlers.read().unwrap().len() != 0
+         })
+     }
+@@ -2304,12 +2343,94 @@ pub mod sessions {
+     #[inline]
+     #[cfg(not(target_os = "ios"))]
+     pub fn has_connected_sessions_running(conn_type: ConnType) -> bool {
+-        SESSIONS.read().unwrap().iter().any(|((_, r#type), s)| {
++        SESSIONS.read().unwrap().iter().any(|((_, r#type, _), s)| {
+             *r#type == conn_type
+                 && s.session_handlers.read().unwrap().len() != 0
+                 && s.connection_round_state.lock().unwrap().is_connected()
+         })
+     }
++    #[cfg(test)]
++    mod brs_consent_registry_tests {
++        use super::*;
++
++        fn connection(peer: &str, consent_only: bool) -> FlutterSession {
++            let session: Session<FlutterHandler> = Default::default();
++            {
++                let mut login = session.lc.write().unwrap();
++                login.consent_only = consent_only;
++                login.initialize(
++                    peer.to_owned(),
++                    ConnType::DEFAULT_CONN,
++                    None,
++                    false,
++                    None,
++                    None,
++                    None,
++                );
++            }
++            Arc::new(session)
++        }
++
++        #[test]
++        fn brs_consent_registry_keeps_transports_and_monitors_separate() {
++            let peer = "brs-consent-registry-regression";
++            let kind = ConnType::DEFAULT_CONN;
++            let trusted_id = SessionID::from_u128(0x42525301);
++            let normal_a_id = SessionID::from_u128(0x42525302);
++            let normal_b_id = SessionID::from_u128(0x42525303);
++            let monitor_id = SessionID::from_u128(0x42525304);
++            let legacy_monitor_id = SessionID::from_u128(0x42525305);
++            let missing_id = SessionID::from_u128(0x42525306);
++            let trusted = connection(peer, false);
++            let normal_a = connection(peer, true);
++            let normal_b = connection(peer, true);
++            insert_session(trusted_id, kind, trusted.clone());
++            insert_session(normal_a_id, kind, normal_a.clone());
++            insert_session(normal_b_id, kind, normal_b.clone());
++
++            // This fails with the former map keyed only by peer and type:
++            // both new normal views were registered on the trusted transport.
++            let registered_a = get_session_by_session_id(&normal_a_id).unwrap();
++            let registered_b = get_session_by_session_id(&normal_b_id).unwrap();
++            assert!(Arc::ptr_eq(&registered_a, &normal_a));
++            assert!(Arc::ptr_eq(&registered_b, &normal_b));
++            assert!(!Arc::ptr_eq(&registered_a, &trusted));
++            assert!(!Arc::ptr_eq(&registered_a, &registered_b));
++            assert_eq!(get_session_count(peer.to_owned(), kind), 3);
++
++            assert!(insert_peer_session_id(
++                peer.to_owned(), kind, monitor_id, vec![0], Some(normal_a_id)));
++            assert!(Arc::ptr_eq(
++                &get_session_by_session_id(&monitor_id).unwrap(), &normal_a));
++            assert!(!insert_peer_session_id(
++                peer.to_owned(), kind, missing_id, vec![0], Some(missing_id)));
++            assert!(get_session_by_session_id(&missing_id).is_none());
++
++            // Legacy monitor lookup continues to use the non-consent transport.
++            assert!(insert_peer_session_id(
++                peer.to_owned(), kind, legacy_monitor_id, vec![0], None));
++            assert!(Arc::ptr_eq(
++                &get_session_by_session_id(&legacy_monitor_id).unwrap(), &trusted));
++            assert!(remove_session_by_session_id(&legacy_monitor_id).is_none());
++
++            assert!(Arc::ptr_eq(
++                &remove_session_by_session_id(&normal_b_id).unwrap(), &normal_b));
++            assert!(get_session_by_session_id(&normal_b_id).is_none());
++            assert!(get_session_by_session_id(&trusted_id).is_some());
++
++            // Closing the original normal view preserves its additional monitor.
++            assert!(remove_session_by_session_id(&normal_a_id).is_none());
++            assert!(get_session_by_session_id(&monitor_id).is_some());
++            assert_eq!(get_session_count(peer.to_owned(), kind), 2);
++            assert!(Arc::ptr_eq(
++                &remove_session_by_session_id(&monitor_id).unwrap(), &normal_a));
++            assert!(Arc::ptr_eq(
++                &get_session_by_peer_id(peer.to_owned(), kind).unwrap(), &trusted));
++            assert!(remove_session_by_session_id(&trusted_id).is_some());
++            assert_eq!(get_session_count(peer.to_owned(), kind), 0);
++        }
++    }
++
+ }
+ 
+ pub(super) mod async_tasks {
 diff --git a/src/flutter_ffi.rs b/src/flutter_ffi.rs
-index 0777443..57240da 100644
+index 0777443..207186d 100644
 --- a/src/flutter_ffi.rs
 +++ b/src/flutter_ffi.rs
-@@ -143,6 +143,7 @@ pub fn session_add_sync(
+@@ -126,14 +126,28 @@ pub fn session_add_existed_sync(
+     session_id: SessionID,
+     displays: Vec<i32>,
+     is_view_camera: bool,
++    source_session_id: String,
+ ) -> SyncReturn<String> {
+-    if let Err(e) = session_add_existed(id.clone(), session_id, displays, is_view_camera) {
++    if let Err(e) = session_add_existed(id.clone(), session_id, displays, is_view_camera, source_session_id) {
+         SyncReturn(format!("Failed to add session with id {}, {}", &id, e))
+     } else {
+         SyncReturn("".to_owned())
+     }
+ }
+ 
++pub fn session_same_connection_sync(
++    source_session_id: SessionID,
++    target_session_id: SessionID,
++) -> SyncReturn<bool> {
++    SyncReturn(match (
++        sessions::get_session_by_session_id(&source_session_id),
++        sessions::get_session_by_session_id(&target_session_id),
++    ) {
++        (Some(source), Some(target)) => Arc::ptr_eq(&source, &target),
++        _ => false,
++    })
++}
++
+ pub fn session_add_sync(
+     session_id: SessionID,
+     id: String,
+@@ -143,6 +157,7 @@ pub fn session_add_sync(
      is_rdp: bool,
      is_terminal: bool,
      switch_uuid: String,
@@ -377,7 +777,7 @@ index 0777443..57240da 100644
      force_relay: bool,
      password: String,
      is_shared_password: bool,
-@@ -157,6 +158,7 @@ pub fn session_add_sync(
+@@ -157,6 +172,7 @@ pub fn session_add_sync(
          is_rdp,
          is_terminal,
          &switch_uuid,
