@@ -238,7 +238,7 @@ index 175e3ff..be30e1e 100644
            isViewCamera: isViewCamera);
        if (addRes != '') {
 diff --git a/flutter/lib/utils/multi_window_manager.dart b/flutter/lib/utils/multi_window_manager.dart
-index 9e26f8c..9b7fbe2 100644
+index 9e26f8c..c0a3563 100644
 --- a/flutter/lib/utils/multi_window_manager.dart
 +++ b/flutter/lib/utils/multi_window_manager.dart
 @@ -98,7 +98,7 @@ class RustDeskMultiWindowManager {
@@ -274,7 +274,7 @@ index 9e26f8c..9b7fbe2 100644
    }) async {
      var params = {
        "type": type.index,
-@@ -249,8 +252,18 @@ class RustDeskMultiWindowManager {
+@@ -249,13 +252,41 @@ class RustDeskMultiWindowManager {
      if (connToken != null) {
        params['connToken'] = connToken;
      }
@@ -293,7 +293,31 @@ index 9e26f8c..9b7fbe2 100644
      // separate window for file transfer is not supported
      bool openInTabs = type != WindowType.RemoteDesktop ||
          mainGetLocalBoolOptionSync(kOptionOpenNewConnInTabs);
-@@ -273,6 +286,7 @@ class RustDeskMultiWindowManager {
+ 
+-    if (windows.length > 1 || !openInTabs) {
++    if (type == WindowType.RemoteDesktop) {
++      var separateTransportWindow = false;
++      for (final windowId in windows) {
++        if (await DesktopMultiWindow.invokeMethod(
++            windowId, kWindowEventActiveSession, remoteId)) {
++          return MultiWindowCallResult(windowId, null);
++        }
++        final peers = await DesktopMultiWindow.invokeMethod(
++            windowId, kWindowEventGetRemoteList, '');
++        if (peers is String && peers.split(',').contains(remoteId)) {
++          separateTransportWindow = true;
++        }
++      }
++      // The only remaining view for this peer is consent-only. It must
++      // not receive an authenticated tab with the same peer key.
++      if (separateTransportWindow) {
++        return _newSession(false, type, methodName, remoteId, windows, msg);
++      }
++    } else if (windows.length > 1 || !openInTabs) {
+       for (final windowId in windows) {
+         if (await DesktopMultiWindow.invokeMethod(
+             windowId, kWindowEventActiveSession, remoteId)) {
+@@ -273,6 +304,7 @@ class RustDeskMultiWindowManager {
      bool? isSharedPassword,
      String? switchUuid,
      bool? forceRelay,
@@ -301,7 +325,7 @@ index 9e26f8c..9b7fbe2 100644
    }) async {
      return await newSession(
        WindowType.RemoteDesktop,
-@@ -283,6 +297,7 @@ class RustDeskMultiWindowManager {
+@@ -283,6 +315,7 @@ class RustDeskMultiWindowManager {
        forceRelay: forceRelay,
        switchUuid: switchUuid,
        isSharedPassword: isSharedPassword,
